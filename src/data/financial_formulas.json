@@ -1,0 +1,559 @@
+{
+  "version": "1.0",
+  "description": "Local financial formula registry for deterministic and assisted calculations.",
+  "formulas": [
+    {
+      "id": "revenue_growth_pct",
+      "name": "Revenue Growth %",
+      "category": "growth",
+      "expression": "((revenue_current - revenue_previous) / revenue_previous) * 100",
+      "unit": "%",
+      "variables": ["revenue_current", "revenue_previous"],
+      "variable_labels": {
+        "revenue_current": ["revenue current", "current revenue", "revenue"],
+        "revenue_previous": ["revenue previous", "prior revenue", "revenue last year"]
+      },
+      "aliases": ["revenue growth", "sales growth", "top line growth"]
+    },
+    {
+      "id": "gross_profit",
+      "name": "Gross Profit",
+      "category": "profitability",
+      "expression": "revenue - cogs",
+      "unit": "currency",
+      "variables": ["revenue", "cogs"],
+      "variable_labels": {
+        "revenue": ["revenue", "sales", "total revenues"],
+        "cogs": ["cogs", "cost of goods sold", "cost of revenue", "cost of revenues"]
+      },
+      "aliases": ["gross profit"]
+    },
+    {
+      "id": "gross_margin_pct",
+      "name": "Gross Margin %",
+      "category": "profitability",
+      "expression": "((revenue - cogs) / revenue) * 100",
+      "unit": "%",
+      "variables": ["revenue", "cogs"],
+      "variable_labels": {
+        "revenue": ["revenue", "sales", "total revenues"],
+        "cogs": ["cogs", "cost of goods sold", "cost of revenue", "cost of revenues"]
+      },
+      "aliases": ["gross margin"]
+    },
+    {
+      "id": "operating_margin_pct",
+      "name": "Operating Margin %",
+      "category": "profitability",
+      "expression": "(operating_income / revenue) * 100",
+      "unit": "%",
+      "variables": ["operating_income", "revenue"],
+      "variable_labels": {
+        "operating_income": ["operating income", "income from operations", "ebit"],
+        "revenue": ["revenue", "sales", "total revenues"]
+      },
+      "aliases": ["operating margin", "ebit margin"]
+    },
+    {
+      "id": "net_margin_pct",
+      "name": "Net Margin %",
+      "category": "profitability",
+      "expression": "(net_income / revenue) * 100",
+      "unit": "%",
+      "variables": ["net_income", "revenue"],
+      "variable_labels": {
+        "net_income": ["net income", "net profit", "profit after tax"],
+        "revenue": ["revenue", "sales", "total revenues"]
+      },
+      "aliases": ["net margin", "profit margin"]
+    },
+    {
+      "id": "ebitda_margin_pct",
+      "name": "EBITDA Margin %",
+      "category": "profitability",
+      "expression": "(ebitda / revenue) * 100",
+      "unit": "%",
+      "variables": ["ebitda", "revenue"],
+      "variable_labels": {
+        "ebitda": ["ebitda"],
+        "revenue": ["revenue", "sales", "total revenues"]
+      },
+      "aliases": ["ebitda margin"]
+    },
+    {
+      "id": "current_ratio",
+      "name": "Current Ratio",
+      "category": "liquidity",
+      "expression": "current_assets / current_liabilities",
+      "unit": "ratio",
+      "variables": ["current_assets", "current_liabilities"],
+      "variable_labels": {
+        "current_assets": ["current assets"],
+        "current_liabilities": ["current liabilities"]
+      },
+      "aliases": ["current ratio", "working capital ratio"]
+    },
+    {
+      "id": "quick_ratio",
+      "name": "Quick Ratio",
+      "category": "liquidity",
+      "expression": "(current_assets - inventory) / current_liabilities",
+      "unit": "ratio",
+      "variables": ["current_assets", "inventory", "current_liabilities"],
+      "variable_labels": {
+        "current_assets": ["current assets"],
+        "inventory": ["inventory", "stock"],
+        "current_liabilities": ["current liabilities"]
+      },
+      "aliases": ["quick ratio", "acid test ratio"]
+    },
+    {
+      "id": "cash_ratio",
+      "name": "Cash Ratio",
+      "category": "liquidity",
+      "expression": "(cash + cash_equivalents) / current_liabilities",
+      "unit": "ratio",
+      "variables": ["cash", "cash_equivalents", "current_liabilities"],
+      "variable_labels": {
+        "cash": ["cash"],
+        "cash_equivalents": ["cash equivalents"],
+        "current_liabilities": ["current liabilities"]
+      },
+      "aliases": ["cash ratio"]
+    },
+    {
+      "id": "working_capital",
+      "name": "Working Capital",
+      "category": "liquidity",
+      "expression": "current_assets - current_liabilities",
+      "unit": "currency",
+      "variables": ["current_assets", "current_liabilities"],
+      "variable_labels": {
+        "current_assets": ["current assets"],
+        "current_liabilities": ["current liabilities"]
+      },
+      "aliases": ["working capital"]
+    },
+    {
+      "id": "debt_to_equity",
+      "name": "Debt-to-Equity",
+      "category": "leverage",
+      "expression": "total_debt / total_equity",
+      "unit": "ratio",
+      "variables": ["total_debt", "total_equity"],
+      "variable_labels": {
+        "total_debt": ["total debt", "debt"],
+        "total_equity": ["total equity", "shareholders equity", "stockholders equity"]
+      },
+      "aliases": ["debt to equity", "d/e"]
+    },
+    {
+      "id": "debt_ratio",
+      "name": "Debt Ratio",
+      "category": "leverage",
+      "expression": "total_liabilities / total_assets",
+      "unit": "ratio",
+      "variables": ["total_liabilities", "total_assets"],
+      "variable_labels": {
+        "total_liabilities": ["total liabilities", "liabilities"],
+        "total_assets": ["total assets", "assets"]
+      },
+      "aliases": ["debt ratio", "liabilities to assets"]
+    },
+    {
+      "id": "interest_coverage",
+      "name": "Interest Coverage",
+      "category": "leverage",
+      "expression": "ebit / interest_expense",
+      "unit": "ratio",
+      "variables": ["ebit", "interest_expense"],
+      "variable_labels": {
+        "ebit": ["ebit", "operating income"],
+        "interest_expense": ["interest expense", "finance costs"]
+      },
+      "aliases": ["interest coverage", "times interest earned"]
+    },
+    {
+      "id": "dscr",
+      "name": "Debt Service Coverage Ratio",
+      "category": "leverage",
+      "expression": "operating_cash_flow / debt_service",
+      "unit": "ratio",
+      "variables": ["operating_cash_flow", "debt_service"],
+      "variable_labels": {
+        "operating_cash_flow": ["operating cash flow", "cash from operations"],
+        "debt_service": ["debt service"]
+      },
+      "aliases": ["dscr", "debt service coverage"]
+    },
+    {
+      "id": "inventory_turnover",
+      "name": "Inventory Turnover",
+      "category": "efficiency",
+      "expression": "cogs / average_inventory",
+      "unit": "turns",
+      "variables": ["cogs", "average_inventory"],
+      "variable_labels": {
+        "cogs": ["cogs", "cost of goods sold", "cost of revenues"],
+        "average_inventory": ["average inventory"]
+      },
+      "aliases": ["inventory turnover"]
+    },
+    {
+      "id": "dio_days",
+      "name": "Days Inventory Outstanding",
+      "category": "efficiency",
+      "expression": "(average_inventory / cogs) * 365",
+      "unit": "days",
+      "variables": ["average_inventory", "cogs"],
+      "variable_labels": {
+        "average_inventory": ["average inventory"],
+        "cogs": ["cogs", "cost of goods sold", "cost of revenues"]
+      },
+      "aliases": ["dio", "days inventory outstanding", "inventory days"]
+    },
+    {
+      "id": "receivables_turnover",
+      "name": "Receivables Turnover",
+      "category": "efficiency",
+      "expression": "net_credit_sales / average_accounts_receivable",
+      "unit": "turns",
+      "variables": ["net_credit_sales", "average_accounts_receivable"],
+      "variable_labels": {
+        "net_credit_sales": ["net credit sales", "credit sales"],
+        "average_accounts_receivable": ["average accounts receivable", "average receivables"]
+      },
+      "aliases": ["receivables turnover"]
+    },
+    {
+      "id": "dso_days",
+      "name": "Days Sales Outstanding",
+      "category": "efficiency",
+      "expression": "(average_accounts_receivable / net_credit_sales) * 365",
+      "unit": "days",
+      "variables": ["average_accounts_receivable", "net_credit_sales"],
+      "variable_labels": {
+        "average_accounts_receivable": ["average accounts receivable", "average receivables"],
+        "net_credit_sales": ["net credit sales", "credit sales"]
+      },
+      "aliases": ["dso", "days sales outstanding", "receivables days"]
+    },
+    {
+      "id": "payables_turnover",
+      "name": "Payables Turnover",
+      "category": "efficiency",
+      "expression": "purchases / average_accounts_payable",
+      "unit": "turns",
+      "variables": ["purchases", "average_accounts_payable"],
+      "variable_labels": {
+        "purchases": ["purchases"],
+        "average_accounts_payable": ["average accounts payable", "average payables"]
+      },
+      "aliases": ["payables turnover"]
+    },
+    {
+      "id": "dpo_days",
+      "name": "Days Payables Outstanding",
+      "category": "efficiency",
+      "expression": "(average_accounts_payable / purchases) * 365",
+      "unit": "days",
+      "variables": ["average_accounts_payable", "purchases"],
+      "variable_labels": {
+        "average_accounts_payable": ["average accounts payable", "average payables"],
+        "purchases": ["purchases"]
+      },
+      "aliases": ["dpo", "days payables outstanding", "payables days"]
+    },
+    {
+      "id": "asset_turnover",
+      "name": "Asset Turnover",
+      "category": "efficiency",
+      "expression": "revenue / average_total_assets",
+      "unit": "turns",
+      "variables": ["revenue", "average_total_assets"],
+      "variable_labels": {
+        "revenue": ["revenue", "sales"],
+        "average_total_assets": ["average total assets"]
+      },
+      "aliases": ["asset turnover"]
+    },
+    {
+      "id": "fixed_asset_turnover",
+      "name": "Fixed Asset Turnover",
+      "category": "efficiency",
+      "expression": "revenue / average_net_fixed_assets",
+      "unit": "turns",
+      "variables": ["revenue", "average_net_fixed_assets"],
+      "variable_labels": {
+        "revenue": ["revenue", "sales"],
+        "average_net_fixed_assets": ["average net fixed assets", "average pp&e"]
+      },
+      "aliases": ["fixed asset turnover"]
+    },
+    {
+      "id": "cash_conversion_cycle_days",
+      "name": "Cash Conversion Cycle",
+      "category": "efficiency",
+      "expression": "dio + dso - dpo",
+      "unit": "days",
+      "variables": ["dio", "dso", "dpo"],
+      "variable_labels": {
+        "dio": ["dio", "days inventory outstanding"],
+        "dso": ["dso", "days sales outstanding"],
+        "dpo": ["dpo", "days payables outstanding"]
+      },
+      "aliases": ["cash conversion cycle", "ccc"]
+    },
+    {
+      "id": "roa_pct",
+      "name": "Return on Assets %",
+      "category": "returns",
+      "expression": "(net_income / average_total_assets) * 100",
+      "unit": "%",
+      "variables": ["net_income", "average_total_assets"],
+      "variable_labels": {
+        "net_income": ["net income", "net profit"],
+        "average_total_assets": ["average total assets"]
+      },
+      "aliases": ["roa", "return on assets"]
+    },
+    {
+      "id": "roe_pct",
+      "name": "Return on Equity %",
+      "category": "returns",
+      "expression": "(net_income / average_equity) * 100",
+      "unit": "%",
+      "variables": ["net_income", "average_equity"],
+      "variable_labels": {
+        "net_income": ["net income", "net profit"],
+        "average_equity": ["average equity", "average shareholders equity"]
+      },
+      "aliases": ["roe", "return on equity"]
+    },
+    {
+      "id": "roic_pct",
+      "name": "Return on Invested Capital %",
+      "category": "returns",
+      "expression": "(nopat / invested_capital) * 100",
+      "unit": "%",
+      "variables": ["nopat", "invested_capital"],
+      "variable_labels": {
+        "nopat": ["nopat", "net operating profit after tax"],
+        "invested_capital": ["invested capital"]
+      },
+      "aliases": ["roic", "return on invested capital"]
+    },
+    {
+      "id": "roce_pct",
+      "name": "Return on Capital Employed %",
+      "category": "returns",
+      "expression": "(ebit / capital_employed) * 100",
+      "unit": "%",
+      "variables": ["ebit", "capital_employed"],
+      "variable_labels": {
+        "ebit": ["ebit", "operating income"],
+        "capital_employed": ["capital employed"]
+      },
+      "aliases": ["roce", "return on capital employed"]
+    },
+    {
+      "id": "eps_basic",
+      "name": "Basic EPS",
+      "category": "per_share",
+      "expression": "net_income_available_to_common / weighted_avg_shares_basic",
+      "unit": "currency/share",
+      "variables": ["net_income_available_to_common", "weighted_avg_shares_basic"],
+      "variable_labels": {
+        "net_income_available_to_common": ["net income available to common"],
+        "weighted_avg_shares_basic": ["weighted average shares basic", "basic shares"]
+      },
+      "aliases": ["basic eps", "earnings per share basic"]
+    },
+    {
+      "id": "eps_diluted",
+      "name": "Diluted EPS",
+      "category": "per_share",
+      "expression": "net_income_available_to_common / weighted_avg_shares_diluted",
+      "unit": "currency/share",
+      "variables": ["net_income_available_to_common", "weighted_avg_shares_diluted"],
+      "variable_labels": {
+        "net_income_available_to_common": ["net income available to common"],
+        "weighted_avg_shares_diluted": ["weighted average shares diluted", "diluted shares"]
+      },
+      "aliases": ["diluted eps", "earnings per share diluted"]
+    },
+    {
+      "id": "pe_ratio",
+      "name": "Price-to-Earnings Ratio",
+      "category": "valuation",
+      "expression": "market_price_per_share / eps",
+      "unit": "ratio",
+      "variables": ["market_price_per_share", "eps"],
+      "variable_labels": {
+        "market_price_per_share": ["share price", "market price per share"],
+        "eps": ["eps", "earnings per share"]
+      },
+      "aliases": ["p/e", "pe ratio", "price to earnings"]
+    },
+    {
+      "id": "market_cap",
+      "name": "Market Capitalization",
+      "category": "valuation",
+      "expression": "share_price * shares_outstanding",
+      "unit": "currency",
+      "variables": ["share_price", "shares_outstanding"],
+      "variable_labels": {
+        "share_price": ["share price", "market price"],
+        "shares_outstanding": ["shares outstanding"]
+      },
+      "aliases": ["market cap", "market capitalization"]
+    },
+    {
+      "id": "enterprise_value",
+      "name": "Enterprise Value",
+      "category": "valuation",
+      "expression": "market_cap + total_debt + minority_interest + preferred_equity - cash_and_cash_equivalents",
+      "unit": "currency",
+      "variables": ["market_cap", "total_debt", "minority_interest", "preferred_equity", "cash_and_cash_equivalents"],
+      "variable_labels": {
+        "market_cap": ["market cap", "market capitalization"],
+        "total_debt": ["total debt"],
+        "minority_interest": ["minority interest"],
+        "preferred_equity": ["preferred equity"],
+        "cash_and_cash_equivalents": ["cash and cash equivalents", "cash equivalents"]
+      },
+      "aliases": ["enterprise value", "ev"]
+    },
+    {
+      "id": "ev_ebitda",
+      "name": "EV/EBITDA",
+      "category": "valuation",
+      "expression": "enterprise_value / ebitda",
+      "unit": "multiple",
+      "variables": ["enterprise_value", "ebitda"],
+      "variable_labels": {
+        "enterprise_value": ["enterprise value", "ev"],
+        "ebitda": ["ebitda"]
+      },
+      "aliases": ["ev/ebitda", "ev ebitda multiple"]
+    },
+    {
+      "id": "price_to_book",
+      "name": "Price-to-Book Ratio",
+      "category": "valuation",
+      "expression": "market_cap / book_value_equity",
+      "unit": "ratio",
+      "variables": ["market_cap", "book_value_equity"],
+      "variable_labels": {
+        "market_cap": ["market cap"],
+        "book_value_equity": ["book value equity", "total equity"]
+      },
+      "aliases": ["p/b", "price to book"]
+    },
+    {
+      "id": "operating_cash_flow_ratio",
+      "name": "Operating Cash Flow Ratio",
+      "category": "cashflow",
+      "expression": "operating_cash_flow / current_liabilities",
+      "unit": "ratio",
+      "variables": ["operating_cash_flow", "current_liabilities"],
+      "variable_labels": {
+        "operating_cash_flow": ["operating cash flow", "cash from operations"],
+        "current_liabilities": ["current liabilities"]
+      },
+      "aliases": ["operating cash flow ratio", "ocf ratio"]
+    },
+    {
+      "id": "free_cash_flow",
+      "name": "Free Cash Flow",
+      "category": "cashflow",
+      "expression": "operating_cash_flow - capital_expenditures",
+      "unit": "currency",
+      "variables": ["operating_cash_flow", "capital_expenditures"],
+      "variable_labels": {
+        "operating_cash_flow": ["operating cash flow", "cash from operations"],
+        "capital_expenditures": ["capital expenditures", "capex"]
+      },
+      "aliases": ["free cash flow", "fcf"]
+    },
+    {
+      "id": "free_cash_flow_margin_pct",
+      "name": "Free Cash Flow Margin %",
+      "category": "cashflow",
+      "expression": "(free_cash_flow / revenue) * 100",
+      "unit": "%",
+      "variables": ["free_cash_flow", "revenue"],
+      "variable_labels": {
+        "free_cash_flow": ["free cash flow", "fcf"],
+        "revenue": ["revenue", "sales"]
+      },
+      "aliases": ["free cash flow margin", "fcf margin"]
+    },
+    {
+      "id": "capex_to_revenue_pct",
+      "name": "CapEx to Revenue %",
+      "category": "cashflow",
+      "expression": "(capital_expenditures / revenue) * 100",
+      "unit": "%",
+      "variables": ["capital_expenditures", "revenue"],
+      "variable_labels": {
+        "capital_expenditures": ["capital expenditures", "capex"],
+        "revenue": ["revenue", "sales"]
+      },
+      "aliases": ["capex to revenue", "capex ratio"]
+    },
+    {
+      "id": "effective_tax_rate_pct",
+      "name": "Effective Tax Rate %",
+      "category": "tax",
+      "expression": "(income_tax_expense / pre_tax_income) * 100",
+      "unit": "%",
+      "variables": ["income_tax_expense", "pre_tax_income"],
+      "variable_labels": {
+        "income_tax_expense": ["income tax expense", "provision for income taxes"],
+        "pre_tax_income": ["pre tax income", "income before taxes", "income before income taxes"]
+      },
+      "aliases": ["effective tax rate", "tax rate effective"]
+    },
+    {
+      "id": "tax_burden_ratio",
+      "name": "Tax Burden Ratio",
+      "category": "tax",
+      "expression": "net_income / pre_tax_income",
+      "unit": "ratio",
+      "variables": ["net_income", "pre_tax_income"],
+      "variable_labels": {
+        "net_income": ["net income"],
+        "pre_tax_income": ["pre tax income", "income before taxes"]
+      },
+      "aliases": ["tax burden ratio", "dupont tax burden"]
+    },
+    {
+      "id": "contribution_margin_pct",
+      "name": "Contribution Margin %",
+      "category": "managerial",
+      "expression": "((revenue - variable_costs) / revenue) * 100",
+      "unit": "%",
+      "variables": ["revenue", "variable_costs"],
+      "variable_labels": {
+        "revenue": ["revenue", "sales"],
+        "variable_costs": ["variable costs"]
+      },
+      "aliases": ["contribution margin"]
+    },
+    {
+      "id": "break_even_units",
+      "name": "Break-Even Units",
+      "category": "managerial",
+      "expression": "fixed_costs / (price_per_unit - variable_cost_per_unit)",
+      "unit": "units",
+      "variables": ["fixed_costs", "price_per_unit", "variable_cost_per_unit"],
+      "variable_labels": {
+        "fixed_costs": ["fixed costs"],
+        "price_per_unit": ["price per unit"],
+        "variable_cost_per_unit": ["variable cost per unit"]
+      },
+      "aliases": ["break even units", "breakeven units"]
+    }
+  ]
+}

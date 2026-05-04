@@ -1,0 +1,88 @@
+name: financial-bot
+
+services:
+  # Elasticsearch 8.11 - Search Engine
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: financial-bot-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false # Disabled for development
+      - "ES_JAVA_OPTS=-Xms1g -Xmx1g" # 1GB heap size for development
+      - cluster.name=financial-bot
+      - node.name=node-1
+      - bootstrap.memory_lock=true
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    ports:
+      - "39200:9200"
+    volumes:
+      - financial_bot_elasticsearch_data:/usr/share/elasticsearch/data
+    networks:
+      - financial-bot-network
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # PostgreSQL 14 - Metadata Database
+  postgres:
+    image: postgres:14-alpine
+    container_name: financial-bot-postgres
+    environment:
+      - POSTGRES_USER=docsearch
+      - POSTGRES_PASSWORD=dev_password_change_in_production
+      - POSTGRES_DB=docsearch
+    ports:
+      - "55432:5432"
+    volumes:
+      - financial_bot_postgres_data:/var/lib/postgresql/data
+    networks:
+      - financial-bot-network
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U docsearch" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Financial Document Assistant Application
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: financial-bot-app
+    environment:
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - DATABASE_URL=postgresql://docsearch:dev_password_change_in_production@postgres:5432/docsearch
+      - PDF_STORAGE_PATH=/app/data/pdfs
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - LOG_LEVEL=INFO
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8100:8000"
+    volumes:
+      - ./Source_files:/app/Source_files
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./.env:/app/.env
+    networks:
+      - financial-bot-network
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  financial_bot_elasticsearch_data:
+  financial_bot_postgres_data:
+
+networks:
+  financial-bot-network:
+    driver: bridge

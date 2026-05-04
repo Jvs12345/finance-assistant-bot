@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Financial Document Assistant</title>
+    <style>
+        :root {
+            --primary: #0f766e;
+            --primary-dark: #115e59;
+            --bg: #f3f7f8;
+            --card: #ffffff;
+            --text: #152129;
+            --muted: #576873;
+            --border: #d9e3e8;
+            --ai-bg: #edf4f5;
+            --user-bg: #0f766e;
+            --warning-bg: #fff8e8;
+            --warning-border: #f5d98f;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background: radial-gradient(circle at top right, #d8ecea 0%, var(--bg) 45%, #eef4f8 100%);
+            color: var(--text);
+            font-family: "IBM Plex Sans", "Segoe UI", Tahoma, sans-serif;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .header {
+            background: var(--card);
+            border-bottom: 1px solid var(--border);
+            padding: 12px 16px;
+        }
+
+        .title {
+            font-weight: 700;
+            font-size: 1.1rem;
+            color: var(--primary-dark);
+        }
+
+        .subtitle {
+            margin-top: 4px;
+            color: var(--muted);
+            font-size: 0.9rem;
+        }
+
+        .chat-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 18px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .message {
+            max-width: 88%;
+            display: flex;
+        }
+
+        .message.user {
+            align-self: flex-end;
+        }
+
+        .message.ai {
+            align-self: flex-start;
+        }
+
+        .bubble {
+            border-radius: 14px;
+            padding: 12px 14px;
+            line-height: 1.45;
+            font-size: 0.95rem;
+            border: 1px solid var(--border);
+            background: var(--card);
+        }
+
+        .message.user .bubble {
+            background: var(--user-bg);
+            border-color: var(--user-bg);
+            color: #fff;
+        }
+
+        .message.ai .bubble {
+            background: var(--ai-bg);
+            color: var(--text);
+        }
+
+        .input-panel {
+            border-top: 1px solid var(--border);
+            background: var(--card);
+            padding: 12px;
+            display: grid;
+            gap: 10px;
+        }
+
+        .filters {
+            display: grid;
+            gap: 8px;
+            grid-template-columns: repeat(3, minmax(180px, 1fr));
+        }
+
+        .filters input,
+        .filters select,
+        .message-input {
+            border: 1px solid var(--border);
+            border-radius: 9px;
+            padding: 10px;
+            font-size: 0.9rem;
+            font-family: inherit;
+            background: #fff;
+            color: var(--text);
+        }
+
+        .input-row {
+            display: flex;
+            gap: 8px;
+        }
+
+        .message-input {
+            flex: 1;
+        }
+
+        .send-btn {
+            border: none;
+            background: var(--primary);
+            color: #fff;
+            padding: 0 14px;
+            border-radius: 9px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+
+        .send-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .examples {
+            margin-top: 8px;
+            padding-left: 18px;
+        }
+
+        .examples li {
+            cursor: pointer;
+            margin-bottom: 5px;
+            color: #0f4d66;
+        }
+
+        .sources {
+            margin-top: 10px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: #fff;
+            padding: 8px;
+        }
+
+        .source-item {
+            padding: 8px;
+            border: 1px solid #e9eef1;
+            border-radius: 7px;
+            margin-bottom: 7px;
+            color: inherit;
+            text-decoration: none;
+            display: block;
+        }
+
+        .source-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .source-meta {
+            margin-top: 4px;
+            color: #5d6d77;
+            font-size: 0.82rem;
+        }
+
+        .source-snippet {
+            margin-top: 6px;
+            font-size: 0.84rem;
+            color: #29404d;
+        }
+
+        .typing {
+            display: inline-flex;
+            gap: 5px;
+        }
+
+        .dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: #7b8f99;
+            animation: blink 1.1s infinite;
+        }
+
+        .dot:nth-child(2) { animation-delay: 0.15s; }
+        .dot:nth-child(3) { animation-delay: 0.30s; }
+
+        @keyframes blink {
+            0%, 100% { opacity: 0.25; transform: translateY(0); }
+            50% { opacity: 1; transform: translateY(-2px); }
+        }
+
+        @media (max-width: 900px) {
+            .filters {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
+
+        @media (max-width: 640px) {
+            .filters {
+                grid-template-columns: 1fr;
+            }
+            .message {
+                max-width: 96%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="title">Financial Document Assistant</div>
+        <div class="subtitle">Q&A over tax, accounting, and financial documents.</div>
+    </div>
+
+    <div class="chat-container" id="chatContainer">
+        <div class="message ai">
+            <div class="bubble">
+                Ask a question about your uploaded financial and tax documents.
+                <br><br>
+                <strong>Example questions:</strong>
+                <ul class="examples" id="exampleQuestions">
+                    <li onclick="setMessage('Which expenses in these files look deductible?')">Which expenses in these files look deductible?</li>
+                    <li onclick="setMessage('What tax obligations are mentioned for this client?')">What tax obligations are mentioned for this client?</li>
+                    <li onclick="setMessage('Where do these documents mention VAT rules?')">Where do these documents mention VAT rules?</li>
+                    <li onclick="setMessage('Compare this income statement with the tax requirements in the uploaded docs.')">Compare this income statement with the tax requirements in the uploaded docs.</li>
+                    <li onclick="setMessage('What information is still missing before drafting a tax position?')">What information is still missing before drafting a tax position?</li>
+                    <li onclick="setMessage('Do these files contain inconsistent numbers?')">Do these files contain inconsistent numbers?</li>
+                    <li onclick="setMessage('Explain this tax rule in simple language and quote the source.')">Explain this tax rule in simple language and quote the source.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <div class="input-panel">
+        <div class="filters">
+            <select id="documentType">
+                <option value="">Document type (optional)</option>
+                <option value="tax_law">Tax law</option>
+                <option value="regulation">Regulation</option>
+                <option value="annual_report">Annual report</option>
+                <option value="invoice">Invoice</option>
+                <option value="ledger">Ledger</option>
+                <option value="bank_statement">Bank statement</option>
+                <option value="tax_return">Tax return</option>
+                <option value="correspondence">Correspondence</option>
+                <option value="other">Other</option>
+            </select>
+            <input id="jurisdiction" type="text" placeholder="Jurisdiction (e.g., Netherlands)">
+            <input id="taxYear" type="number" min="1900" max="2100" placeholder="Tax year (e.g., 2025)">
+        </div>
+
+        <div class="input-row">
+            <input id="messageInput" class="message-input" type="text" placeholder="Ask a question about your documents..." autocomplete="off">
+            <button id="sendBtn" class="send-btn">Send</button>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = window.location.origin + "/api/v1/llama/ask";
+        const chatContainer = document.getElementById("chatContainer");
+        const messageInput = document.getElementById("messageInput");
+        const sendBtn = document.getElementById("sendBtn");
+
+        const FIXED_MODEL = "llama3.2";
+        const documentTypeInput = document.getElementById("documentType");
+        const jurisdictionInput = document.getElementById("jurisdiction");
+        const taxYearInput = document.getElementById("taxYear");
+
+        let conversationHistory = [];
+        let isProcessing = false;
+
+        function setMessage(text) {
+            messageInput.value = text;
+            messageInput.focus();
+        }
+
+        function scrollToBottom() {
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        function isChromeFamilyBrowser() {
+            const ua = navigator.userAgent || "";
+            return ua.includes("Chrome") || ua.includes("Edg");
+        }
+
+        function normalizeForPdfSearch(text) {
+            return String(text || "")
+                .replace(/\s+/g, " ")
+                .replace(/[^\w\s\u20AC\u00A3$%.,\-]/g, " ")
+                .trim();
+        }
+
+        function buildPdfFragment(source) {
+            const page = source.page ? `page=${source.page}` : "";
+            const snippetText = normalizeForPdfSearch(source.snippet || "");
+
+            const words = snippetText.split(" ").filter(Boolean);
+            const shortPhrase = words.slice(0, 6).join(" ");
+            const keyword = words.find((w) => w.length >= 5) || words[0] || "";
+
+            const fragmentParts = [];
+            if (page) fragmentParts.push(page);
+
+            if (isChromeFamilyBrowser()) {
+                if (keyword) fragmentParts.push(`search=${encodeURIComponent(keyword)}`);
+                if (shortPhrase && shortPhrase !== keyword) {
+                    fragmentParts.push(`search_phrase=${encodeURIComponent(shortPhrase)}`);
+                }
+            } else if (shortPhrase) {
+                fragmentParts.push(`search=${encodeURIComponent(shortPhrase)}`);
+            } else if (keyword) {
+                fragmentParts.push(`search=${encodeURIComponent(keyword)}`);
+            }
+
+            return fragmentParts.length ? `#${fragmentParts.join("&")}` : "";
+        }
+
+        function extractNumericCandidates(text) {
+            const matches = String(text || "").match(/\$?\d[\d,]*(?:\.\d+)?%?/g) || [];
+            const unique = [];
+            const seen = new Set();
+            for (const m of matches) {
+                const cleaned = m.trim();
+                if (!cleaned) continue;
+                const key = cleaned.replace(/\s+/g, "");
+                if (seen.has(key)) continue;
+                seen.add(key);
+                unique.push(cleaned);
+            }
+            return unique.slice(0, 8);
+        }
+
+        function scoreNumericCandidate(token) {
+            const t = String(token || "").trim();
+            if (!t) return -999;
+            let score = 0;
+            if (t.includes("$") || t.includes("\u20AC") || t.includes("\u00A3")) score += 6;
+            if (t.includes(",")) score += 4;
+            if (t.includes(".")) score += 2;
+            if (/%$/.test(t)) score -= 3;
+            const digitsOnly = t.replace(/[^\d]/g, "");
+            if (digitsOnly.length >= 6) score += 5;
+            else if (digitsOnly.length >= 4) score += 3;
+            else if (digitsOnly.length <= 2) score -= 2;
+            if (/^(19|20)\d{2}$/.test(digitsOnly)) score -= 5;
+            return score;
+        }
+
+        function chooseAnswerLinkedNumericCandidates(sourceSnippet, answerText) {
+            const answerCandidates = extractNumericCandidates(answerText || "");
+            const snippetCandidates = extractNumericCandidates(sourceSnippet || "");
+
+            const rank = (arr) =>
+                arr
+                    .map((v) => ({ value: v, score: scoreNumericCandidate(v) }))
+                    .filter((x) => x.score >= 1)
+                    .sort((a, b) => b.score - a.score)
+                    .map((x) => x.value);
+            const rankedAnswer = rank(answerCandidates);
+            if (rankedAnswer.length) return rankedAnswer.slice(0, 4);
+            const rankedSnippet = rank(snippetCandidates);
+            return rankedSnippet.slice(0, 4);
+        }
+
+        function buildPdfHighlightUrl(rawPdfUrl, source, answerText) {
+            const snippetText = normalizeForPdfSearch(source.snippet || "");
+            const words = snippetText.split(" ").filter(Boolean);
+            const query = words.slice(0, 10).join(" ");
+            const numericTargets = chooseAnswerLinkedNumericCandidates(source.snippet || "", answerText || "");
+            const params = new URLSearchParams({
+                file: rawPdfUrl,
+                page: String(source.page || 1),
+                q: query
+            });
+            if (numericTargets.length) {
+                params.set("n", numericTargets.join("|"));
+            }
+            return `/static/pdf_highlight.html?${params.toString()}`;
+        }
+
+        function addMessage(role, text, sources = []) {
+            const node = document.createElement("div");
+            node.className = `message ${role}`;
+
+            let html = text.replace(/\n/g, "<br>");
+            if (role === "ai" && sources && sources.length > 0) {
+                const sourceHtml = sources.map((s) => {
+                    const fragment = buildPdfFragment(s);
+                    const isBatchSourceFile = String(s.document_id || "").startsWith("pdf-");
+                    const rawPdfUrl = isBatchSourceFile && s.filename
+                        ? `/source_files/${encodeURIComponent(s.filename)}${fragment}`
+                        : (s.document_id ? `/api/v1/documents/${s.document_id}/view${fragment}` : "#");
+                    const url = rawPdfUrl !== "#" ? buildPdfHighlightUrl(rawPdfUrl, s, text) : "#";
+
+                    return `
+                        <a href="${url}" target="_blank" class="source-item">
+                            <div><strong>${s.filename || "Document"}</strong></div>
+                            <div class="source-meta">
+                                Score: ${Number(s.score || 0).toFixed(2)}
+                                | Page: ${s.page || "N/A"}
+                                | Type: ${s.category || "other"}
+                                | Jurisdiction: ${s.jurisdiction || "unknown"}
+                                | Tax year: ${s.tax_year || "unknown"}
+                            </div>
+                            ${s.snippet ? `<div class="source-snippet">${escapeHtml(s.snippet)}</div>` : ""}
+                        </a>
+                    `;
+                }).join("");
+
+                html += `<div class="sources"><strong>Sources used</strong><div style="margin-top:8px">${sourceHtml}</div></div>`;
+            }
+
+            node.innerHTML = `<div class="bubble">${html}</div>`;
+            chatContainer.appendChild(node);
+            scrollToBottom();
+            return node;
+        }
+
+        function addTyping() {
+            const id = `typing-${Date.now()}`;
+            const node = document.createElement("div");
+            node.id = id;
+            node.className = "message ai";
+            node.innerHTML = `<div class="bubble"><span class="typing"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span></div>`;
+            chatContainer.appendChild(node);
+            scrollToBottom();
+            return id;
+        }
+
+        function removeNode(id) {
+            const node = document.getElementById(id);
+            if (node) node.remove();
+        }
+
+        function escapeHtml(value) {
+            return value
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+
+        async function sendMessage() {
+            const question = messageInput.value.trim();
+            if (!question || isProcessing) return;
+
+            addMessage("user", question);
+            messageInput.value = "";
+            isProcessing = true;
+            sendBtn.disabled = true;
+
+            const typingId = addTyping();
+
+            const payload = {
+                question,
+                history: conversationHistory,
+                model: FIXED_MODEL,
+                document_type: documentTypeInput.value || null,
+                jurisdiction: jurisdictionInput.value.trim() || null,
+                tax_year: taxYearInput.value ? Number(taxYearInput.value) : null
+            };
+
+            try {
+                const response = await fetch(API_URL, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload)
+                });
+
+                const data = await response.json();
+                removeNode(typingId);
+
+                if (!response.ok) {
+                    throw new Error(data?.detail || "Request failed");
+                }
+
+                addMessage("ai", data.answer || "No answer returned.", data.sources || []);
+                conversationHistory.push({ role: "user", content: question });
+                conversationHistory.push({ role: "assistant", content: data.answer || "" });
+            } catch (err) {
+                removeNode(typingId);
+                const detail = (err && err.message) ? `\n\nError detail: ${err.message}` : "";
+                addMessage("ai", `I could not process this request. Please verify the backend is running and try again.${detail}`);
+                console.error(err);
+            } finally {
+                isProcessing = false;
+                sendBtn.disabled = false;
+                messageInput.focus();
+            }
+        }
+
+        sendBtn.addEventListener("click", sendMessage);
+        messageInput.addEventListener("keypress", (event) => {
+            if (event.key === "Enter") {
+                sendMessage();
+            }
+        });
+    </script>
+</body>
+</html>
+
+
+

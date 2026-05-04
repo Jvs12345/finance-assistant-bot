@@ -1,0 +1,10 @@
+Source_files
+logs
+data
+.git
+__pycache__
+.venv
+.env
+*.pdf
+models
+whoosh_index

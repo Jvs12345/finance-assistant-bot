@@ -1,0 +1,1 @@
+Get-Content logs\fast_reindex.log -Tail 30 -Wait

@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF Source Viewer</title>
+    <style>
+        body {
+            margin: 0;
+            font-family: "Segoe UI", Tahoma, sans-serif;
+            background: #f3f5f7;
+            color: #1f2937;
+        }
+        .topbar {
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            background: #ffffff;
+            border-bottom: 1px solid #d6dde3;
+            padding: 10px 14px;
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .pill {
+            background: #eef2f6;
+            border: 1px solid #d6dde3;
+            border-radius: 999px;
+            padding: 4px 10px;
+            font-size: 12px;
+        }
+        .note {
+            font-size: 12px;
+            color: #5b6470;
+        }
+        #viewer {
+            display: flex;
+            justify-content: center;
+            padding: 16px;
+        }
+        #pageContainer {
+            position: relative;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.12);
+            background: #fff;
+        }
+        #pdfCanvas {
+            display: block;
+        }
+        #textLayer {
+            position: absolute;
+            left: 0;
+            top: 0;
+            right: 0;
+            bottom: 0;
+            overflow: hidden;
+            line-height: 1.0;
+        }
+        #textLayer span {
+            color: transparent;
+            position: absolute;
+            white-space: pre;
+            transform-origin: 0% 0%;
+        }
+        #textLayer span.hl {
+            background: rgba(255, 235, 59, 0.65);
+            border-radius: 2px;
+        }
+        .error {
+            margin: 18px;
+            padding: 12px;
+            border: 1px solid #e5a7a7;
+            background: #fff1f1;
+            color: #8a1f1f;
+            border-radius: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="topbar">
+        <div class="pill" id="fileLabel">Source PDF</div>
+        <div class="pill" id="pageLabel">Page</div>
+        <div class="pill" id="queryLabel">Highlight</div>
+        <div class="note">If no highlight appears, the PDF text layer may not contain an exact match (scan/OCR/layout mismatch).</div>
+    </div>
+    <div id="viewer">
+        <div id="pageContainer">
+            <canvas id="pdfCanvas"></canvas>
+            <div id="textLayer"></div>
+        </div>
+    </div>
+    <div id="errorBox" class="error" style="display:none;"></div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script>
+        pdfjsLib.GlobalWorkerOptions.workerSrc =
+            "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+        const params = new URLSearchParams(window.location.search);
+        const file = params.get("file");
+        const page = Math.max(parseInt(params.get("page") || "1", 10), 1);
+        const query = (params.get("q") || "").trim();
+        const numericRaw = (params.get("n") || "").trim();
+        const numericCandidates = numericRaw
+            ? numericRaw.split("|").map(s => s.trim()).filter(Boolean).slice(0, 8)
+            : [];
+
+        document.getElementById("fileLabel").textContent = `Source: ${file || "N/A"}`;
+        document.getElementById("pageLabel").textContent = `Page: ${page}`;
+        document.getElementById("queryLabel").textContent = `Highlight: ${query || "(none)"}${numericCandidates.length ? ` | Numbers: ${numericCandidates.join(", ")}` : ""}`;
+
+        const canvas = document.getElementById("pdfCanvas");
+        const textLayer = document.getElementById("textLayer");
+        const errorBox = document.getElementById("errorBox");
+
+        function showError(message) {
+            errorBox.style.display = "block";
+            errorBox.textContent = message;
+        }
+
+        function normalize(text) {
+            return String(text || "").toLowerCase().replace(/\s+/g, " ").trim();
+        }
+
+        function normalizeNumberToken(text) {
+            return String(text || "")
+                .replace(/[$€£,\s]/g, "")
+                .replace(/[%]/g, "")
+                .trim();
+        }
+
+        async function render() {
+            if (!file) {
+                showError("Missing PDF file parameter.");
+                return;
+            }
+
+            try {
+                const loadingTask = pdfjsLib.getDocument({
+                    url: file,
+                    withCredentials: false
+                });
+                const pdf = await loadingTask.promise;
+                const safePage = Math.min(page, pdf.numPages);
+                const pdfPage = await pdf.getPage(safePage);
+
+                const viewport = pdfPage.getViewport({ scale: 1.35 });
+                canvas.width = Math.floor(viewport.width);
+                canvas.height = Math.floor(viewport.height);
+                textLayer.style.width = `${canvas.width}px`;
+                textLayer.style.height = `${canvas.height}px`;
+
+                await pdfPage.render({
+                    canvasContext: canvas.getContext("2d"),
+                    viewport
+                }).promise;
+
+                const textContent = await pdfPage.getTextContent();
+                textLayer.innerHTML = "";
+                await pdfjsLib.renderTextLayer({
+                    textContent,
+                    container: textLayer,
+                    viewport,
+                    textDivs: []
+                }).promise;
+
+                const spans = Array.from(textLayer.querySelectorAll("span"));
+                let first = null;
+
+                // 1) Numeric-first highlighting (best for financial questions like revenue values).
+                if (numericCandidates.length) {
+                    const normalizedTargets = numericCandidates
+                        .map(normalizeNumberToken)
+                        .filter(Boolean);
+
+                    for (const span of spans) {
+                        const spanNumeric = normalizeNumberToken(span.textContent || "");
+                        if (!spanNumeric) continue;
+                        if (normalizedTargets.some(target =>
+                            spanNumeric === target
+                        )) {
+                            span.classList.add("hl");
+                            if (!first) first = span;
+                        }
+                    }
+                }
+
+                // 2) Phrase fallback only when no numeric targets were provided.
+                if (!first && !numericCandidates.length && query) {
+                    const normalizedQuery = normalize(query);
+                    for (const span of spans) {
+                        const spanText = normalize(span.textContent);
+                        if (!spanText) continue;
+                        if (spanText.includes(normalizedQuery) || normalizedQuery.includes(spanText)) {
+                            span.classList.add("hl");
+                            if (!first) first = span;
+                        }
+                    }
+                }
+
+                // 3) Token fallback for fragmented text layers (also only when no numeric targets).
+                if (!first && !numericCandidates.length && query) {
+                    const normalizedQuery = normalize(query);
+                    const tokens = normalizedQuery.split(" ").filter(t => t.length >= 4);
+                    for (const span of spans) {
+                        const spanText = normalize(span.textContent);
+                        if (!spanText) continue;
+                        if (tokens.some(t => spanText.includes(t))) {
+                            span.classList.add("hl");
+                            if (!first) first = span;
+                        }
+                    }
+                }
+
+                if (first) {
+                    first.scrollIntoView({ behavior: "smooth", block: "center" });
+                }
+            } catch (err) {
+                showError(`Failed to render highlighted PDF view: ${err.message || err}`);
+            }
+        }
+
+        render();
+    </script>
+</body>
+</html>

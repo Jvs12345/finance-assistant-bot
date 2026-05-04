@@ -1,0 +1,51 @@
+# Environment
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+
+# Build/test cache
+.pytest_cache/
+.mypy_cache/
+coverage/
+htmlcov/
+
+# Node/build
+node_modules/
+dist/
+build/
+
+# Logs and temp
+logs/
+*.log
+tmp/
+temp/
+
+# Local data and uploads
+Source_files/*
+!Source_files/.gitkeep
+uploads/*
+!uploads/.gitkeep
+data/*
+!data/.gitkeep
+!data/pdfs/
+!data/pdfs/.gitkeep
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Misc
+*.pdf
+*.db
+reindex.log
+.playwright-mcp/
