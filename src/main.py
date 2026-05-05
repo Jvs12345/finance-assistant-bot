@@ -124,6 +124,10 @@ source_files_dir = Path(__file__).parent.parent / "Source_files"
 if source_files_dir.exists():
     app.mount("/source_files", StaticFiles(directory=str(source_files_dir)), name="source_files")
 
+existing_files_dir = Path(__file__).parent.parent / "Existing_files"
+if existing_files_dir.exists():
+    app.mount("/existing_files", StaticFiles(directory=str(existing_files_dir)), name="existing_files")
+
 from src.api.search import router as search_router
 from src.api.documents import router as documents_router
 from src.api.feedback import router as feedback_router

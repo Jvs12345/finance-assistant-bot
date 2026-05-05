@@ -11,11 +11,9 @@ This is a practical setup guide for running the Financial Document Assistant loc
 
 ## 2. Clone the project
 ```powershell
-git clone https://github.com/Jvs12345/BeInformed_chatbot.git
-cd BeInformed_chatbot
+git clone <your-repo-url>
+cd <your-repo-folder>
 ```
-
-If you renamed the repository, use your new URL instead.
 
 ## 3. Create local environment file
 ```powershell
@@ -63,10 +61,10 @@ RUN_FINANCIAL_ASSISTANT.bat
 This checks Ollama and opens the app in your browser.
 
 ## 8. Add PDFs and index them
-1. Put your PDFs in `Source_files/`
+1. Put PDFs in `Source_files/`
 2. Run:
 ```powershell
-INDEX_PDFS.bat
+INDEX_SOURCE_FILES.bat
 ```
 
 After indexing, the documents are searchable in chat.
@@ -99,7 +97,7 @@ curl.exe http://localhost:11434/api/tags
 ```
 
 ### No results in chat
-- make sure you indexed files with `INDEX_PDFS.bat`
+- make sure you indexed files with `INDEX_SOURCE_FILES.bat`
 - check that PDFs contain selectable text (OCR issues can fail extraction)
 
 ### Docker memory too high

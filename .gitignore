@@ -31,6 +31,8 @@ temp/
 # Local data and uploads
 Source_files/*
 !Source_files/.gitkeep
+Existing_files/*
+!Existing_files/.gitkeep
 uploads/*
 !uploads/.gitkeep
 data/*

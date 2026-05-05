@@ -242,7 +242,7 @@
                     <li onclick="setMessage('Which expenses in these files look deductible?')">Which expenses in these files look deductible?</li>
                     <li onclick="setMessage('What tax obligations are mentioned for this client?')">What tax obligations are mentioned for this client?</li>
                     <li onclick="setMessage('Where do these documents mention VAT rules?')">Where do these documents mention VAT rules?</li>
-                    <li onclick="setMessage('Compare this income statement with the tax requirements in the uploaded docs.')">Compare this income statement with the tax requirements in the uploaded docs.</li>
+                    <li onclick="setMessage('Summarize the key tax obligations mentioned in these files.')">Summarize the key tax obligations mentioned in these files.</li>
                     <li onclick="setMessage('What information is still missing before drafting a tax position?')">What information is still missing before drafting a tax position?</li>
                     <li onclick="setMessage('Do these files contain inconsistent numbers?')">Do these files contain inconsistent numbers?</li>
                     <li onclick="setMessage('Explain this tax rule in simple language and quote the source.')">Explain this tax rule in simple language and quote the source.</li>
@@ -268,7 +268,6 @@
             <input id="jurisdiction" type="text" placeholder="Jurisdiction (e.g., Netherlands)">
             <input id="taxYear" type="number" min="1900" max="2100" placeholder="Tax year (e.g., 2025)">
         </div>
-
         <div class="input-row">
             <input id="messageInput" class="message-input" type="text" placeholder="Ask a question about your documents..." autocomplete="off">
             <button id="sendBtn" class="send-btn">Send</button>
@@ -281,7 +280,7 @@
         const messageInput = document.getElementById("messageInput");
         const sendBtn = document.getElementById("sendBtn");
 
-        const FIXED_MODEL = "llama3.2";
+        const LAZY_PDF_HIGHLIGHT = true;
         const documentTypeInput = document.getElementById("documentType");
         const jurisdictionInput = document.getElementById("jurisdiction");
         const taxYearInput = document.getElementById("taxYear");
@@ -398,36 +397,66 @@
             return `/static/pdf_highlight.html?${params.toString()}`;
         }
 
-        function addMessage(role, text, sources = []) {
+        function openSourcePdf(event, anchor) {
+            if (!LAZY_PDF_HIGHLIGHT) return true;
+            const rawPdfUrl = anchor.getAttribute("data-raw-pdf-url");
+            if (!rawPdfUrl || rawPdfUrl === "#") return true;
+            const source = {
+                snippet: anchor.getAttribute("data-snippet") || "",
+                page: Number(anchor.getAttribute("data-page") || "1")
+            };
+            const answerText = anchor.getAttribute("data-answer-text") || "";
+            const lazyUrl = buildPdfHighlightUrl(rawPdfUrl, source, answerText);
+            anchor.setAttribute("href", lazyUrl);
+            return true;
+        }
+
+        function renderSourceCards(sources, answerText) {
+            return sources.map((s) => {
+                const fragment = buildPdfFragment(s);
+                const docId = String(s.document_id || "");
+                const isBatchSourceFile = docId.startsWith("pdf-") || docId.includes("-pdf-");
+                const batchFolder = (s.corpus_type === "existing") ? "existing_files" : "source_files";
+                const rawPdfUrl = isBatchSourceFile && s.filename
+                    ? `/${batchFolder}/${encodeURIComponent(s.filename)}${fragment}`
+                    : (s.document_id ? `/api/v1/documents/${s.document_id}/view${fragment}` : "#");
+                const escapedSnippet = escapeHtml(s.snippet || "");
+                const escapedAnswerText = escapeHtml(answerText || "");
+
+                return `
+                    <a href="${rawPdfUrl}" target="_blank" class="source-item"
+                        data-raw-pdf-url="${rawPdfUrl}"
+                        data-snippet="${escapedSnippet}"
+                        data-page="${s.page || 1}"
+                        data-answer-text="${escapedAnswerText}"
+                        onclick="return openSourcePdf(event, this)">
+                        <div><strong>${s.filename || "Document"}</strong></div>
+                        <div class="source-meta">
+                            Score: ${Number(s.score || 0).toFixed(2)}
+                            | Page: ${s.page || "N/A"}
+                            | Type: ${s.category || "other"}
+                            | Jurisdiction: ${s.jurisdiction || "unknown"}
+                            | Tax year: ${s.tax_year || "unknown"}
+                        </div>
+                        ${s.snippet ? `<div class="source-snippet">${escapeHtml(s.snippet)}</div>` : ""}
+                    </a>
+                `;
+            }).join("");
+        }
+
+        function addMessage(role, text, sources = [], warnings = [], metaLine = "") {
             const node = document.createElement("div");
             node.className = `message ${role}`;
 
             let html = text.replace(/\n/g, "<br>");
+            if (role === "ai" && warnings && warnings.length > 0) {
+                html += `<div class="source-meta" style="margin-top:8px;color:#8a6d3b">${warnings.map(escapeHtml).join("<br>")}</div>`;
+            }
+            if (role === "ai" && metaLine) {
+                html += `<div class="source-meta" style="margin-top:8px">${escapeHtml(metaLine)}</div>`;
+            }
             if (role === "ai" && sources && sources.length > 0) {
-                const sourceHtml = sources.map((s) => {
-                    const fragment = buildPdfFragment(s);
-                    const isBatchSourceFile = String(s.document_id || "").startsWith("pdf-");
-                    const rawPdfUrl = isBatchSourceFile && s.filename
-                        ? `/source_files/${encodeURIComponent(s.filename)}${fragment}`
-                        : (s.document_id ? `/api/v1/documents/${s.document_id}/view${fragment}` : "#");
-                    const url = rawPdfUrl !== "#" ? buildPdfHighlightUrl(rawPdfUrl, s, text) : "#";
-
-                    return `
-                        <a href="${url}" target="_blank" class="source-item">
-                            <div><strong>${s.filename || "Document"}</strong></div>
-                            <div class="source-meta">
-                                Score: ${Number(s.score || 0).toFixed(2)}
-                                | Page: ${s.page || "N/A"}
-                                | Type: ${s.category || "other"}
-                                | Jurisdiction: ${s.jurisdiction || "unknown"}
-                                | Tax year: ${s.tax_year || "unknown"}
-                            </div>
-                            ${s.snippet ? `<div class="source-snippet">${escapeHtml(s.snippet)}</div>` : ""}
-                        </a>
-                    `;
-                }).join("");
-
-                html += `<div class="sources"><strong>Sources used</strong><div style="margin-top:8px">${sourceHtml}</div></div>`;
+                html += `<div class="sources"><strong>Sources used</strong><div style="margin-top:8px">${renderSourceCards(sources, text)}</div></div>`;
             }
 
             node.innerHTML = `<div class="bubble">${html}</div>`;
@@ -475,11 +504,11 @@
             const payload = {
                 question,
                 history: conversationHistory,
-                model: FIXED_MODEL,
                 document_type: documentTypeInput.value || null,
                 jurisdiction: jurisdictionInput.value.trim() || null,
                 tax_year: taxYearInput.value ? Number(taxYearInput.value) : null
             };
+            const requestStarted = performance.now();
 
             try {
                 const response = await fetch(API_URL, {
@@ -494,8 +523,16 @@
                 if (!response.ok) {
                     throw new Error(data?.detail || "Request failed");
                 }
+                const requestSeconds = ((performance.now() - requestStarted) / 1000).toFixed(2);
+                const responseTime = `Response time: ${requestSeconds}s`;
 
-                addMessage("ai", data.answer || "No answer returned.", data.sources || []);
+                addMessage(
+                    "ai",
+                    data.answer || "No answer returned.",
+                    data.sources || [],
+                    data.warnings || [],
+                    responseTime
+                );
                 conversationHistory.push({ role: "user", content: question });
                 conversationHistory.push({ role: "assistant", content: data.answer || "" });
             } catch (err) {

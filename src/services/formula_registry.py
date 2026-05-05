@@ -8,7 +8,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 from src.utils.logging import get_logger
 
@@ -25,6 +25,10 @@ class FormulaDefinition:
     variables: List[str]
     variable_labels: Dict[str, List[str]]
     aliases: List[str]
+    derived_inputs: Dict[str, Dict[str, object]]
+    output_type: str
+    explanation: str
+    variable_rules: Dict[str, Dict[str, Any]]
 
 
 class FormulaRegistry:
@@ -32,6 +36,7 @@ class FormulaRegistry:
         base_path = Path(__file__).resolve().parent.parent
         self.path = path or (base_path / "data" / "financial_formulas.json")
         self._formulas: List[FormulaDefinition] = []
+        self._variable_concepts: Dict[str, Dict[str, Any]] = {}
         self._load()
 
     def _load(self) -> None:
@@ -42,6 +47,7 @@ class FormulaRegistry:
 
         payload = json.loads(self.path.read_text(encoding="utf-8"))
         formulas = []
+        self._variable_concepts = payload.get("variable_concepts", {}) or {}
         for item in payload.get("formulas", []):
             formulas.append(
                 FormulaDefinition(
@@ -53,12 +59,36 @@ class FormulaRegistry:
                     variables=item.get("variables", []),
                     variable_labels=item.get("variable_labels", {}),
                     aliases=item.get("aliases", []),
+                    derived_inputs=item.get("derived_inputs", {}),
+                    output_type=item.get("output_type", item.get("unit", "amount")),
+                    explanation=item.get("explanation", ""),
+                    variable_rules=item.get("variable_rules", {}),
                 )
             )
         self._formulas = formulas
 
     def list_formulas(self) -> List[FormulaDefinition]:
         return self._formulas
+
+    def get_variable_rule(
+        self,
+        variable: str,
+        formula: Optional[FormulaDefinition] = None,
+    ) -> Dict[str, Any]:
+        """Resolve variable extraction rule with formula-level override."""
+        rule: Dict[str, Any] = {}
+        lookup_keys = [variable]
+        if variable.endswith("_current") or variable.endswith("_previous"):
+            lookup_keys.append(variable.rsplit("_", 1)[0])
+        for key in lookup_keys:
+            if key in self._variable_concepts:
+                rule.update(self._variable_concepts[key] or {})
+                break
+        if formula and variable in (formula.variable_rules or {}):
+            merged = dict(rule)
+            merged.update(formula.variable_rules.get(variable) or {})
+            return merged
+        return rule
 
     def find_by_question(self, question: str, max_results: int = 6) -> List[FormulaDefinition]:
         q = (question or "").lower()

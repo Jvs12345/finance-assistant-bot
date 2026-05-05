@@ -28,6 +28,16 @@ class Settings(BaseSettings):
     pdf_storage_path: str = Field(default="./data/pdfs", alias="PDF_STORAGE_PATH")
     log_level: str = Field(default="DEBUG", alias="LOG_LEVEL")
     max_file_size_mb: int = Field(default=5120, alias="MAX_FILE_SIZE_MB")  # 5 GB default
+    retrieval_top_k: int = Field(default=10, alias="RETRIEVAL_TOP_K")
+    final_context_chunks: int = Field(default=5, alias="FINAL_CONTEXT_CHUNKS")
+    max_context_chars: int = Field(default=7500, alias="MAX_CONTEXT_CHARS")
+    max_chars_per_chunk: int = Field(default=1500, alias="MAX_CHARS_PER_CHUNK")
+    enable_latency_logs: bool = Field(default=False, alias="ENABLE_LATENCY_LOGS")
+    ollama_model: str = Field(default="llama3.2", alias="OLLAMA_MODEL")
+    ollama_num_predict: int = Field(default=700, alias="OLLAMA_NUM_PREDICT")
+    demo_mode: bool = Field(default=False, alias="DEMO_MODE")
+    demo_ollama_model: str = Field(default="phi3", alias="DEMO_OLLAMA_MODEL")
+    pdf_highlight_lazy: bool = Field(default=True, alias="PDF_HIGHLIGHT_LAZY")
 
     environment: str = Field(default="development", alias="ENVIRONMENT")
     cors_origins: list[str] = Field(default=["*"], alias="CORS_ORIGINS")
@@ -46,6 +56,24 @@ class Settings(BaseSettings):
         """Validate max file size."""
         if v < 1 or v > 5120:
             raise ValueError("MAX_FILE_SIZE_MB must be between 1 and 5120 (5GB)")
+        return v
+
+    @validator("retrieval_top_k", "final_context_chunks")
+    def validate_positive_counts(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("Context limits must be >= 1")
+        return v
+
+    @validator("max_context_chars")
+    def validate_context_chars(cls, v: int) -> int:
+        if v < 1000:
+            raise ValueError("MAX_CONTEXT_CHARS must be >= 1000")
+        return v
+
+    @validator("max_chars_per_chunk")
+    def validate_chunk_chars(cls, v: int) -> int:
+        if v < 400:
+            raise ValueError("MAX_CHARS_PER_CHUNK must be >= 400")
         return v
 
     class Config:

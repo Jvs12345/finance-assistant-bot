@@ -38,12 +38,14 @@ class DocumentIndexingService:
         document_id: str,
         source_filename: str,
         category: str,
+        corpus_type: str = "uploaded",
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Extract pages and build chunk documents for Elasticsearch.
         """
         metadata = metadata or {}
+        resolved_corpus_type = corpus_type if corpus_type in {"existing", "uploaded"} else "uploaded"
         pages = self.processor.extract_pages_from_pdf(file_path)
         if not pages:
             raise ValueError(f"No readable pages extracted from {file_path.name}")
@@ -55,6 +57,7 @@ class DocumentIndexingService:
         metadata["tax_year"] = inferred_tax_year
         metadata["jurisdiction"] = inferred_jurisdiction
         metadata["document_type"] = resolved_category
+        metadata["corpus_type"] = resolved_corpus_type
 
         upload_date = datetime.utcnow().isoformat()
         file_size = file_path.stat().st_size
@@ -98,6 +101,7 @@ class DocumentIndexingService:
                     "client_name": metadata.get("client_name"),
                     "source_name": metadata.get("source_name") or source_filename,
                     "section_reference": metadata.get("section_reference"),
+                    "corpus_type": resolved_corpus_type,
                     "metadata": merged_metadata,
                 }
                 documents.append(doc)

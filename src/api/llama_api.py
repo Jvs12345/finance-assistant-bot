@@ -1,10 +1,11 @@
 """API endpoints for financial document Q&A."""
 
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from src.services.llama_service import get_llama_service
+from src.config import settings
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -16,9 +17,9 @@ class LlamaQuestionRequest(BaseModel):
     """Request model for Llama question."""
 
     question: str = Field(..., description="User's question", min_length=3)
-    max_context_docs: int = Field(default=15, ge=1, le=20, description="Max documents for context")
+    max_context_docs: int = Field(default=settings.retrieval_top_k, ge=1, le=20, description="Max documents for retrieval")
     temperature: float = Field(default=0.7, ge=0.0, le=1.0, description="Response creativity (0=focused, 1=creative)")
-    model: str = Field(default="llama3.2", description="Ollama model to use")
+    model: str = Field(default=settings.ollama_model, description="Ollama model to use")
     system_context: Optional[str] = Field(default=None, description="Legacy context field (deprecated)")
     jurisdiction: Optional[str] = Field(default=None, description="Jurisdiction to prioritize (e.g., Netherlands, EU)")
     tax_year: Optional[int] = Field(default=None, description="Tax year to prioritize")
@@ -41,6 +42,7 @@ class SourceDocument(BaseModel):
     entity_type: Optional[str] = None
     client_name: Optional[str] = None
     section_reference: Optional[str] = None
+    corpus_type: Optional[str] = None
 
 
 class LlamaAnswerResponse(BaseModel):
@@ -51,6 +53,8 @@ class LlamaAnswerResponse(BaseModel):
     model: str
     found_documents: bool
     num_documents_used: Optional[int] = None
+    filters_used: Optional[Dict[str, Any]] = None
+    warnings: List[str] = Field(default_factory=list)
     error: Optional[str] = None
 
 
@@ -87,7 +91,7 @@ async def list_models():
 
         return {
             "models": models,
-            "default": "llama3.2",
+            "default": settings.ollama_model,
             "recommended": ["llama3.2", "llama3.1", "mistral"]
         }
 

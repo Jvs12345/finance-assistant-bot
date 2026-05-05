@@ -1,6 +1,137 @@
 {
   "version": "1.0",
   "description": "Local financial formula registry for deterministic and assisted calculations.",
+  "variable_concepts": {
+    "revenue": {
+      "accepted_labels": ["revenue", "revenues", "total revenue", "net revenue", "net sales", "sales"],
+      "rejected_labels": ["deferred revenue", "unearned revenue", "contract liabilities", "remaining performance obligations", "revenue recognition", "accounts receivable", "accrued revenue", "segment revenue", "product revenue"],
+      "preferred_sections": ["consolidated statements of operations", "consolidated statements of income", "income statement"],
+      "rejected_sections": ["consolidated balance sheets", "current liabilities", "non current liabilities", "notes to consolidated financial statements on revenue recognition"],
+      "aliases": ["top line"],
+      "allow_segment_values": false,
+      "requires_exact_label": false,
+      "statement_type": "income_statement",
+      "derivation_allowed": false
+    },
+    "cogs": {
+      "accepted_labels": ["cost of revenue", "cost of revenues", "cost of sales", "cost of goods sold", "total cost of revenue", "cogs"],
+      "rejected_labels": ["revenue", "deferred revenue", "operating expenses", "sales and marketing", "research and development", "general and administrative"],
+      "preferred_sections": ["consolidated statements of operations", "consolidated statements of income", "income statement"],
+      "rejected_sections": ["consolidated balance sheets", "current liabilities"],
+      "allow_segment_values": false,
+      "requires_exact_label": false,
+      "statement_type": "income_statement",
+      "derivation_allowed": true
+    },
+    "gross_profit": {
+      "accepted_labels": ["gross profit", "gross margin amount"],
+      "rejected_labels": ["revenue", "cost of revenue", "operating income", "net income"],
+      "preferred_sections": ["consolidated statements of operations", "consolidated statements of income", "income statement"],
+      "allow_segment_values": false,
+      "requires_exact_label": false,
+      "statement_type": "income_statement",
+      "derivation_allowed": true
+    },
+    "operating_income": {
+      "accepted_labels": ["operating income", "income from operations", "operating profit", "ebit"],
+      "rejected_labels": ["operating expenses", "operating lease liabilities", "income before taxes", "net income", "comprehensive income"],
+      "preferred_sections": ["consolidated statements of operations", "consolidated statements of income", "income statement"],
+      "allow_segment_values": false,
+      "requires_exact_label": false,
+      "statement_type": "income_statement",
+      "derivation_allowed": false
+    },
+    "net_income": {
+      "accepted_labels": ["net income", "net earnings", "net income attributable to common stockholders", "profit for the year"],
+      "rejected_labels": ["comprehensive income", "income tax expense", "operating income", "accumulated deficit", "retained earnings"],
+      "preferred_sections": ["consolidated statements of operations", "consolidated statements of income", "income statement"],
+      "allow_segment_values": false,
+      "requires_exact_label": false,
+      "statement_type": "income_statement",
+      "derivation_allowed": false
+    },
+    "total_assets": {
+      "accepted_labels": ["total assets"],
+      "rejected_labels": ["total current assets", "current assets", "assets held for sale"],
+      "preferred_sections": ["consolidated balance sheets", "balance sheet"],
+      "allow_segment_values": false,
+      "requires_exact_label": true,
+      "statement_type": "balance_sheet",
+      "derivation_allowed": false
+    },
+    "total_liabilities": {
+      "accepted_labels": ["total liabilities"],
+      "rejected_labels": ["total current liabilities", "current liabilities", "operating lease liabilities", "deferred revenue"],
+      "preferred_sections": ["consolidated balance sheets", "balance sheet"],
+      "allow_segment_values": false,
+      "requires_exact_label": true,
+      "statement_type": "balance_sheet",
+      "derivation_allowed": false
+    },
+    "total_equity": {
+      "accepted_labels": ["total stockholders equity", "total shareholders equity", "total equity"],
+      "rejected_labels": ["additional paid in capital", "accumulated deficit", "retained earnings", "common stock"],
+      "preferred_sections": ["consolidated balance sheets", "balance sheet"],
+      "allow_segment_values": false,
+      "requires_exact_label": false,
+      "statement_type": "balance_sheet",
+      "derivation_allowed": false
+    },
+    "average_equity": {
+      "accepted_labels": ["average equity", "average shareholders equity", "average stockholders equity"],
+      "rejected_labels": ["additional paid in capital", "retained earnings", "common stock"],
+      "preferred_sections": ["consolidated balance sheets", "balance sheet"],
+      "allow_segment_values": false,
+      "requires_exact_label": false,
+      "statement_type": "balance_sheet",
+      "derivation_allowed": true
+    },
+    "current_assets": {
+      "accepted_labels": ["total current assets", "current assets"],
+      "rejected_labels": ["total assets", "non current assets"],
+      "preferred_sections": ["consolidated balance sheets", "balance sheet"],
+      "allow_segment_values": false,
+      "requires_exact_label": false,
+      "statement_type": "balance_sheet",
+      "derivation_allowed": false
+    },
+    "current_liabilities": {
+      "accepted_labels": ["total current liabilities", "current liabilities"],
+      "rejected_labels": ["total liabilities", "non current liabilities"],
+      "preferred_sections": ["consolidated balance sheets", "balance sheet"],
+      "allow_segment_values": false,
+      "requires_exact_label": false,
+      "statement_type": "balance_sheet",
+      "derivation_allowed": false
+    },
+    "operating_cash_flow": {
+      "accepted_labels": ["net cash provided by operating activities", "net cash used in operating activities", "net cash from operating activities", "cash flow from operating activities"],
+      "rejected_labels": ["operating income", "cash and cash equivalents", "operating lease liabilities"],
+      "preferred_sections": ["consolidated statements of cash flows", "cash flow statement"],
+      "allow_segment_values": false,
+      "requires_exact_label": false,
+      "statement_type": "cash_flow",
+      "derivation_allowed": false
+    },
+    "capital_expenditures": {
+      "accepted_labels": ["capital expenditures", "capex", "purchases of property and equipment", "additions to property and equipment"],
+      "rejected_labels": ["additional paid in capital"],
+      "preferred_sections": ["consolidated statements of cash flows", "cash flow statement"],
+      "allow_segment_values": false,
+      "requires_exact_label": false,
+      "statement_type": "cash_flow",
+      "derivation_allowed": false
+    },
+    "cash_and_cash_equivalents": {
+      "accepted_labels": ["cash and cash equivalents"],
+      "rejected_labels": ["cash flow from operations", "operating income"],
+      "preferred_sections": ["consolidated balance sheets", "balance sheet"],
+      "allow_segment_values": false,
+      "requires_exact_label": true,
+      "statement_type": "balance_sheet",
+      "derivation_allowed": false
+    }
+  },
   "formulas": [
     {
       "id": "revenue_growth_pct",
@@ -8,6 +139,8 @@
       "category": "growth",
       "expression": "((revenue_current - revenue_previous) / revenue_previous) * 100",
       "unit": "%",
+      "output_type": "percentage",
+      "explanation": "Year-over-year revenue growth percentage.",
       "variables": ["revenue_current", "revenue_previous"],
       "variable_labels": {
         "revenue_current": ["revenue current", "current revenue", "revenue"],
@@ -21,12 +154,40 @@
       "category": "profitability",
       "expression": "revenue - cogs",
       "unit": "currency",
+      "output_type": "amount",
+      "explanation": "Gross profit from revenue minus cost of revenue/COGS.",
       "variables": ["revenue", "cogs"],
       "variable_labels": {
         "revenue": ["revenue", "sales", "total revenues"],
         "cogs": ["cogs", "cost of goods sold", "cost of revenue", "cost of revenues"]
       },
+      "derived_inputs": {
+        "cogs": {
+          "expression": "revenue - gross_profit",
+          "variables": ["revenue", "gross_profit"]
+        }
+      },
       "aliases": ["gross profit"]
+    },
+    {
+      "id": "cogs_amount",
+      "name": "Cost of Revenue / COGS",
+      "category": "profitability",
+      "expression": "cogs",
+      "unit": "currency",
+      "output_type": "amount",
+      "explanation": "Cost of revenue (COGS), directly stated or derived.",
+      "variables": ["cogs"],
+      "variable_labels": {
+        "cogs": ["cogs", "cost of goods sold", "cost of revenue", "cost of revenues", "cost of sales", "total cost of revenue"]
+      },
+      "derived_inputs": {
+        "cogs": {
+          "expression": "revenue - gross_profit",
+          "variables": ["revenue", "gross_profit"]
+        }
+      },
+      "aliases": ["cogs", "cost of goods sold", "cost of revenue", "cost of sales"]
     },
     {
       "id": "gross_margin_pct",
@@ -34,10 +195,18 @@
       "category": "profitability",
       "expression": "((revenue - cogs) / revenue) * 100",
       "unit": "%",
+      "output_type": "percentage",
+      "explanation": "Gross margin based on revenue and COGS.",
       "variables": ["revenue", "cogs"],
       "variable_labels": {
         "revenue": ["revenue", "sales", "total revenues"],
         "cogs": ["cogs", "cost of goods sold", "cost of revenue", "cost of revenues"]
+      },
+      "derived_inputs": {
+        "cogs": {
+          "expression": "revenue - gross_profit",
+          "variables": ["revenue", "gross_profit"]
+        }
       },
       "aliases": ["gross margin"]
     },
@@ -47,6 +216,8 @@
       "category": "profitability",
       "expression": "(operating_income / revenue) * 100",
       "unit": "%",
+      "output_type": "percentage",
+      "explanation": "Operating margin as operating income over revenue.",
       "variables": ["operating_income", "revenue"],
       "variable_labels": {
         "operating_income": ["operating income", "income from operations", "ebit"],
@@ -60,6 +231,8 @@
       "category": "profitability",
       "expression": "(net_income / revenue) * 100",
       "unit": "%",
+      "output_type": "percentage",
+      "explanation": "Net margin as net income over revenue.",
       "variables": ["net_income", "revenue"],
       "variable_labels": {
         "net_income": ["net income", "net profit", "profit after tax"],
@@ -86,6 +259,8 @@
       "category": "liquidity",
       "expression": "current_assets / current_liabilities",
       "unit": "ratio",
+      "output_type": "ratio",
+      "explanation": "Current assets divided by current liabilities.",
       "variables": ["current_assets", "current_liabilities"],
       "variable_labels": {
         "current_assets": ["current assets"],
@@ -99,6 +274,8 @@
       "category": "liquidity",
       "expression": "(current_assets - inventory) / current_liabilities",
       "unit": "ratio",
+      "output_type": "ratio",
+      "explanation": "Quick assets divided by current liabilities.",
       "variables": ["current_assets", "inventory", "current_liabilities"],
       "variable_labels": {
         "current_assets": ["current assets"],
@@ -140,6 +317,8 @@
       "category": "leverage",
       "expression": "total_debt / total_equity",
       "unit": "ratio",
+      "output_type": "ratio",
+      "explanation": "Debt to equity leverage ratio.",
       "variables": ["total_debt", "total_equity"],
       "variable_labels": {
         "total_debt": ["total debt", "debt"],
@@ -310,6 +489,8 @@
       "category": "returns",
       "expression": "(net_income / average_total_assets) * 100",
       "unit": "%",
+      "output_type": "percentage",
+      "explanation": "Return on assets percentage.",
       "variables": ["net_income", "average_total_assets"],
       "variable_labels": {
         "net_income": ["net income", "net profit"],
@@ -323,6 +504,8 @@
       "category": "returns",
       "expression": "(net_income / average_equity) * 100",
       "unit": "%",
+      "output_type": "percentage",
+      "explanation": "Return on equity percentage.",
       "variables": ["net_income", "average_equity"],
       "variable_labels": {
         "net_income": ["net income", "net profit"],
@@ -469,12 +652,29 @@
       "category": "cashflow",
       "expression": "operating_cash_flow - capital_expenditures",
       "unit": "currency",
+      "output_type": "amount",
+      "explanation": "Operating cash flow minus capital expenditures.",
       "variables": ["operating_cash_flow", "capital_expenditures"],
       "variable_labels": {
         "operating_cash_flow": ["operating cash flow", "cash from operations"],
         "capital_expenditures": ["capital expenditures", "capex"]
       },
       "aliases": ["free cash flow", "fcf"]
+    },
+    {
+      "id": "eps_growth_pct",
+      "name": "EPS Growth %",
+      "category": "growth",
+      "expression": "((eps_current - eps_previous) / eps_previous) * 100",
+      "unit": "%",
+      "output_type": "percentage",
+      "explanation": "Year-over-year EPS growth percentage.",
+      "variables": ["eps_current", "eps_previous"],
+      "variable_labels": {
+        "eps_current": ["eps current", "current eps", "diluted eps", "basic eps", "earnings per share"],
+        "eps_previous": ["eps previous", "prior eps", "last year eps"]
+      },
+      "aliases": ["eps growth", "earnings per share growth"]
     },
     {
       "id": "free_cash_flow_margin_pct",

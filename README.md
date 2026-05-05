@@ -13,6 +13,7 @@ I first built a Be Informed documentation chatbot. I reused the same local RAG s
 - Filter retrieval by document type, jurisdiction, and tax year.
 - Show source snippets and open source PDFs from the answer.
 - Run local calculations when the answer includes a calculation payload.
+- Run formula-driven calculations from natural language using the local formula registry.
 
 ## How it works
 1. PDF text is extracted and split into chunks.
@@ -62,14 +63,39 @@ RUN_FINANCIAL_ASSISTANT.bat
 
 - `http://localhost:8100/`
 
+## Latency tuning (optional)
+You can tune response speed in `.env`:
+
+```env
+RETRIEVAL_TOP_K=10
+FINAL_CONTEXT_CHUNKS=5
+MAX_CONTEXT_CHARS=7500
+MAX_CHARS_PER_CHUNK=1500
+ENABLE_LATENCY_LOGS=false
+OLLAMA_MODEL=llama3.2
+OLLAMA_NUM_PREDICT=700
+DEMO_MODE=false
+DEMO_OLLAMA_MODEL=phi3
+```
+
+Notes:
+- Lower `FINAL_CONTEXT_CHUNKS` or `MAX_CONTEXT_CHARS` to reduce prompt size.
+- Keep `RETRIEVAL_TOP_K` high enough for source quality.
+- For demo speed, set `DEMO_MODE=true` and choose a faster local model in `DEMO_OLLAMA_MODEL`.
+- Calculation answers can bypass LLM generation when all values are source-validated, so they are usually faster than open-ended questions.
+
 ## How to add documents
-### Option A: Batch indexing from `Source_files/`
-- Put PDF files in `Source_files/`
+### Option A: Batch indexing
+- Put PDFs in `Source_files/`
 - Run:
 
 ```powershell
-INDEX_PDFS.bat
+INDEX_SOURCE_FILES.bat
 ```
+
+Optional legacy scripts:
+- `INDEX_BOTH.bat` indexes `Existing_files/` and `Source_files/`
+- `INDEX_EXISTING_FILES.bat` indexes only `Existing_files/`
 
 ### Option B: API upload
 
@@ -85,11 +111,19 @@ curl -X POST "http://localhost:8100/api/v1/documents/upload" `
 Then ask questions at:
 - `POST /api/v1/llama/ask`
 
+## Document folders
+`Source_files/`
+- Main local folder for PDFs
+- Examples: annual reports, tax documents, invoices, client files
+
+`Existing_files/` (optional)
+- Kept for compatibility with earlier indexing scripts
+- Not required for normal Q&A
+
 ## Example questions
 - Which expenses in these files look deductible?
 - What tax obligations are mentioned for this client?
 - Where do these documents mention VAT rules?
-- Compare this income statement with the tax requirements in the uploaded docs.
 - What information is still missing before drafting a tax position?
 - Do these files contain inconsistent numbers?
 - Explain this tax rule in simple language and quote the source.
@@ -116,13 +150,21 @@ src/
   utils/          Auth and logging helpers
 scripts/          Local indexing and utility scripts
 static/           UI and PDF highlight viewer
+Existing_files/   Baseline/reference PDFs (ignored in git)
 Source_files/     Local PDF input folder (ignored in git)
 uploads/          Temporary upload folder (ignored in git)
 ```
 
 ## Manual test checklist
 1. Start services and open `http://localhost:8100/`.
-2. Put at least one PDF in `Source_files/` and run `INDEX_PDFS.bat`.
-3. Ask a question in the UI and verify source cards appear.
+2. Put one PDF in `Source_files/`, then run `INDEX_SOURCE_FILES.bat`.
+3. Ask a normal question in the UI and verify source cards appear.
 4. Upload a PDF through `/api/v1/documents/upload` and query it.
 5. Delete an uploaded document with `DELETE /api/v1/documents/{document_id}` and re-query.
+6. Run calculation checks:
+   - `Calculate Palantir's revenue growth.`
+   - `Calculate Palantir's gross margin.`
+   - `Calculate Palantir's COGS.`
+   - `Calculate Alphabet's revenue growth.`
+   - `Compare Palantir and Alphabet revenue growth.`
+   - `Calculate current ratio.`

@@ -66,6 +66,7 @@ services:
     ports:
       - "8100:8000"
     volumes:
+      - ./Existing_files:/app/Existing_files
       - ./Source_files:/app/Source_files
       - ./data:/app/data
       - ./logs:/app/logs

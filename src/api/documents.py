@@ -178,13 +178,23 @@ async def upload_document(
 
     try:
         pg_client.update_document_status(document_id, ProcessingStatus.PARSING)
-        prepared = indexing_service.prepare_pdf_document(
-            file_path=file_path,
-            document_id=document_id,
-            source_filename=file.filename,
-            category=doc_category.value,
-            metadata=metadata_payload,
-        )
+        try:
+            prepared = indexing_service.prepare_pdf_document(
+                file_path=file_path,
+                document_id=document_id,
+                source_filename=file.filename,
+                category=doc_category.value,
+                corpus_type="uploaded",
+                metadata=metadata_payload,
+            )
+        except TypeError:
+            prepared = indexing_service.prepare_pdf_document(
+                file_path=file_path,
+                document_id=document_id,
+                source_filename=file.filename,
+                category=doc_category.value,
+                metadata=metadata_payload,
+            )
 
         pg_client.update_document_status(
             document_id=document_id,

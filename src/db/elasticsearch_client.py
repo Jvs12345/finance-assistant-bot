@@ -2,6 +2,9 @@
 
 from typing import List, Dict, Any, Optional
 from datetime import datetime
+from collections import OrderedDict
+from time import perf_counter
+import re
 
 from elasticsearch import Elasticsearch, helpers
 from elasticsearch.exceptions import NotFoundError, ConnectionError as ESConnectionError
@@ -30,9 +33,38 @@ class ElasticsearchClient:
             provider=EmbeddingProvider.LOCAL,
             model="all-MiniLM-L6-v2"
         )
+        self._query_embedding_cache: "OrderedDict[str, List[float]]" = OrderedDict()
+        self._embedding_cache_size = 128
 
         self._ensure_connection()
         self._create_index_if_not_exists()
+
+    def _get_query_embedding(self, query: str) -> Optional[List[float]]:
+        key = self._normalize_query_key(query)
+        if not key:
+            return None
+        key = f"{self.embedding_service.model}::{key}"
+        cached = self._query_embedding_cache.get(key)
+        if cached is not None:
+            self._query_embedding_cache.move_to_end(key)
+            return cached
+        try:
+            vector = self.embedding_service.get_embedding(query)
+        except Exception as e:
+            logger.warning(f"Failed to generate query embedding: {e}")
+            return None
+        self._query_embedding_cache[key] = vector
+        if len(self._query_embedding_cache) > self._embedding_cache_size:
+            self._query_embedding_cache.popitem(last=False)
+        return vector
+
+    def _normalize_query_key(self, query: str) -> str:
+        text = (query or "").strip().lower()
+        if not text:
+            return ""
+        text = re.sub(r"[\.,;:!?()\[\]{}\"'`]", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text
 
     def _ensure_connection(self):
         """Connect to Elasticsearch with retries."""
@@ -93,6 +125,7 @@ class ElasticsearchClient:
                     "entity_type": {"type": "keyword"},
                     "source_name": {"type": "keyword"},
                     "section_reference": {"type": "keyword"},
+                    "corpus_type": {"type": "keyword"},
                     "upload_date": {"type": "date"},
                     "page_number": {"type": "integer"},
                     "chunk_index": {"type": "integer"},
@@ -154,6 +187,7 @@ class ElasticsearchClient:
                 "entity_type": document.get("entity_type"),
                 "source_name": document.get("source_name") or document.get("filename", "Unknown"),
                 "section_reference": document.get("section_reference"),
+                "corpus_type": document.get("corpus_type"),
                 "upload_date": document.get("upload_date"),
                 "page_number": document.get("page_number") or document.get("page"),
                 "chunk_index": document.get("chunk_index"),
@@ -216,6 +250,7 @@ class ElasticsearchClient:
                     "entity_type": doc.get("entity_type"),
                     "source_name": doc.get("source_name") or doc.get("filename", "Unknown"),
                     "section_reference": doc.get("section_reference"),
+                    "corpus_type": doc.get("corpus_type"),
                     "upload_date": doc.get("upload_date"),
                     "page_number": doc.get("page_number") or doc.get("page"),
                     "chunk_index": doc.get("chunk_index"),
@@ -269,6 +304,8 @@ class ElasticsearchClient:
         entity_type: Optional[str] = None,
         client_name: Optional[str] = None,
         document_type: Optional[str] = None,
+        corpus_type: Optional[str] = None,
+        use_vector: bool = True,
     ) -> List[Dict[str, Any]]:
         """
         Search documents using Elasticsearch.
@@ -286,6 +323,7 @@ class ElasticsearchClient:
             entity_type: Preferred entity type
             client_name: Preferred client name
             document_type: Preferred financial document type
+            corpus_type: Document corpus group ("existing" or "uploaded")
 
         Returns:
             List of search results with summaries
@@ -322,6 +360,8 @@ class ElasticsearchClient:
                 filter_queries.append({"term": {"jurisdiction": jurisdiction}})
             if tax_year is not None:
                 filter_queries.append({"term": {"tax_year": int(tax_year)}})
+            if corpus_type in {"existing", "uploaded"}:
+                filter_queries.append({"term": {"corpus_type": corpus_type}})
                 
             should_queries = []
             if entity_type:
@@ -350,12 +390,14 @@ class ElasticsearchClient:
             }
 
             query_embedding = None
-            try:
-                query_embedding = self.embedding_service.get_embedding(query)
-            except Exception as e:
-                logger.warning(f"Failed to generate query embedding: {e}")
+            if use_vector:
+                embed_started = perf_counter()
+                query_embedding = self._get_query_embedding(query)
+                if settings.enable_latency_logs:
+                    logger.info(f"[latency] query_embedding={(perf_counter() - embed_started):.3f}s")
 
             if query_embedding:
+                es_started = perf_counter()
                 knn_query = {
                     "field": "embedding",
                     "query_vector": query_embedding,
@@ -372,7 +414,10 @@ class ElasticsearchClient:
                     from_=offset,
                     _source=True
                 )
+                if settings.enable_latency_logs:
+                    logger.info(f"[latency] retrieval={(perf_counter() - es_started):.3f}s")
             else:
+                es_started = perf_counter()
                 response = self.es.search(
                     index=self.index_name,
                     query=es_query,
@@ -380,6 +425,8 @@ class ElasticsearchClient:
                     from_=offset,
                     _source=True
                 )
+                if settings.enable_latency_logs:
+                    logger.info(f"[latency] retrieval={(perf_counter() - es_started):.3f}s")
 
             results = []
             for hit in response['hits']['hits']:
@@ -407,6 +454,7 @@ class ElasticsearchClient:
                     "client_name": source.get("client_name"),
                     "source_name": source.get("source_name"),
                     "section_reference": source.get("section_reference"),
+                    "corpus_type": source.get("corpus_type"),
                     "source_filename": source.get("source_filename"),
                     "chunk_id": source.get("chunk_id"),
                     "page_number": source.get("page_number"),

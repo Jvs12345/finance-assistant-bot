@@ -155,6 +155,7 @@ class OptimizedElasticsearchIndexer:
                     "entity_type": doc.get("entity_type"),
                     "source_name": doc.get("source_name"),
                     "section_reference": doc.get("section_reference"),
+                    "corpus_type": doc.get("corpus_type"),
                     "file_path": doc.get("file_path", ""),
                     "file_size": doc.get("file_size", 0),
                     "page_number": doc.get("page_number"),
@@ -208,6 +209,7 @@ def process_pdf_parallel(
     total: int,
     text_chunk_size: int,
     no_chunks: bool,
+    corpus_type: str,
 ) -> List[Dict[str, Any]]:
     """Process a single PDF page-by-page (parallel-safe)."""
     try:
@@ -218,9 +220,10 @@ def process_pdf_parallel(
         indexing_service = DocumentIndexingService(chunk_size=chunk_size, overlap=500)
         prepared = indexing_service.prepare_pdf_document(
             file_path=pdf_path,
-            document_id=f"pdf-{pdf_path.stem}",
+            document_id=f"{corpus_type}-pdf-{pdf_path.stem}",
             source_filename=pdf_path.name,
             category="other",
+            corpus_type=corpus_type,
             metadata={"source_name": pdf_path.name},
         )
         elapsed = time.time() - start
@@ -252,6 +255,10 @@ def main():
                        help='Disable text chunking')
     parser.add_argument('--pdf-dir', default='Source_files',
                        help='Directory containing PDF files (default: Source_files)')
+    parser.add_argument('--existing-dir', default='Existing_files',
+                       help='Directory containing existing/reference PDF files (default: Existing_files)')
+    parser.add_argument('--append', action='store_true',
+                       help='Append to existing index instead of clearing/recreating it')
     parser.add_argument('--yes', '-y', action='store_true')
     args = parser.parse_args()
 
@@ -266,24 +273,34 @@ def main():
     workers = args.workers or max(2, cpu_count - 1)
     print(f"CPUs: {cpu_count} | Workers: {workers}")
     print(f"Bulk chunk size: {args.chunk_size} | Text chunk size: {args.text_chunk_size}")
+    print(f"Index mode: {'append' if args.append else 'rebuild'}")
     print()
 
-    # Find PDFs
     source_dir = Path(args.pdf_dir)
-    pdf_files = sorted(source_dir.glob("*.pdf"))
+    existing_dir = Path(args.existing_dir)
+    uploaded_pdf_files = sorted(source_dir.glob("*.pdf"))
+    existing_pdf_files = sorted(existing_dir.glob("*.pdf")) if existing_dir.exists() else []
+    jobs = (
+        [("uploaded", pdf) for pdf in uploaded_pdf_files]
+        + [("existing", pdf) for pdf in existing_pdf_files]
+    )
 
-    if not pdf_files:
-        print("ERROR: No PDF files found")
+    if not jobs:
+        print("ERROR: No PDF files found in Source_files or Existing_files")
         return 1
 
-    total_size = sum(f.stat().st_size for f in pdf_files)
-    print(f"Found {len(pdf_files)} PDFs ({total_size / (1024**3):.2f} GB)")
-    for i, pdf in enumerate(pdf_files, 1):
-        print(f"  {i}. {pdf.name} ({pdf.stat().st_size / (1024*1024):.1f} MB)")
+    total_size = sum(f.stat().st_size for _, f in jobs)
+    print(
+        f"Found {len(jobs)} PDFs "
+        f"({len(existing_pdf_files)} existing, {len(uploaded_pdf_files)} uploaded, "
+        f"{total_size / (1024**3):.2f} GB)"
+    )
+    for i, (corpus_type, pdf) in enumerate(jobs, 1):
+        print(f"  {i}. [{corpus_type}] {pdf.name} ({pdf.stat().st_size / (1024*1024):.1f} MB)")
     print()
 
     # Estimate time
-    est_time = (total_size / (1024 * 1024) * 2) / workers / 60
+    est_time = (total_size / (1024 * 1024) * 2) / workers / 60 if total_size else 0
     print(f"Estimated time: {est_time:.1f} minutes")
     print()
 
@@ -308,11 +325,12 @@ def main():
                 process_pdf_parallel,
                 pdf,
                 i,
-                len(pdf_files),
+                len(jobs),
                 args.text_chunk_size,
                 args.no_chunks,
+                corpus_type,
             ): pdf
-            for i, pdf in enumerate(pdf_files, 1)
+            for i, (corpus_type, pdf) in enumerate(jobs, 1)
         }
 
         for future in as_completed(futures):
@@ -321,7 +339,7 @@ def main():
                 documents.extend(result)
 
     print()
-    print(f"[OK] Processed {len(documents)}/{len(pdf_files)} files")
+    print(f"[OK] Processed chunk output from {len(jobs)} files")
     print()
 
     if not documents:
@@ -340,14 +358,7 @@ def main():
             settings.elasticsearch_index
         )
 
-        # Clear existing index
-        try:
-            indexer.es.indices.delete(index=indexer.index_name, ignore=[404])
-            print("[OK] Cleared old index")
-        except Exception as e:
-            logger.warning(f"Could not clear index: {e}")
-
-        # Recreate index with optimal settings
+        # Build index mapping/settings used for both rebuild and first-time create.
         index_settings = {
             "settings": {
                 "number_of_shards": 1,
@@ -374,6 +385,7 @@ def main():
                     "entity_type": {"type": "keyword"},
                     "source_name": {"type": "keyword"},
                     "section_reference": {"type": "keyword"},
+                    "corpus_type": {"type": "keyword"},
                     "file_path": {"type": "keyword"},
                     "file_size": {"type": "long"},
                     "page_number": {"type": "integer"},
@@ -392,8 +404,20 @@ def main():
             }
         }
 
-        indexer.es.indices.create(index=indexer.index_name, body=index_settings)
-        print("[OK] Created optimized index")
+        if args.append:
+            if not indexer.es.indices.exists(index=indexer.index_name):
+                indexer.es.indices.create(index=indexer.index_name, body=index_settings)
+                print("[OK] Created index (append mode, index was missing)")
+            else:
+                print("[OK] Keeping existing index (append mode)")
+        else:
+            try:
+                indexer.es.indices.delete(index=indexer.index_name, ignore=[404])
+                print("[OK] Cleared old index")
+            except Exception as e:
+                logger.warning(f"Could not clear index: {e}")
+            indexer.es.indices.create(index=indexer.index_name, body=index_settings)
+            print("[OK] Created optimized index")
         print()
 
         # Apply additional optimizations
@@ -463,8 +487,9 @@ def main():
     print("=" * 80)
     print()
     print(f"Total time: {elapsed.total_seconds():.1f}s ({elapsed.total_seconds() / 60:.2f} min)")
-    print(f"Files: {len(pdf_files)} | Documents: {success_count}")
-    print(f"Avg: {elapsed.total_seconds() / len(pdf_files):.1f}s per file")
+    print(f"Files: {len(jobs)} | Documents: {success_count}")
+    if jobs:
+        print(f"Avg: {elapsed.total_seconds() / len(jobs):.1f}s per file")
     print()
     print("Next: Run RUN_FINANCIAL_ASSISTANT.bat to start searching!")
     print()
@@ -472,7 +497,7 @@ def main():
     # Save stats to log
     log_entry = {
         "timestamp": datetime.now().isoformat(),
-        "files_processed": len(pdf_files),
+        "files_processed": len(jobs),
         "documents_indexed": success_count,
         "errors": error_count,
         "processing_time_seconds": elapsed.total_seconds(),
@@ -486,7 +511,7 @@ def main():
     with open("reindex.log", "a", encoding="utf-8") as f:
         f.write(f"\n{'=' * 80}\n")
         f.write(f"Reindex completed: {datetime.now()}\n")
-        f.write(f"Files: {len(pdf_files)} | Documents: {success_count} | Time: {elapsed.total_seconds():.1f}s\n")
+        f.write(f"Files: {len(jobs)} | Documents: {success_count} | Time: {elapsed.total_seconds():.1f}s\n")
         f.write(f"{'=' * 80}\n")
 
     return 0

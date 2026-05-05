@@ -31,27 +31,31 @@ if not exist ".venv\Scripts\python.exe" (
 rem Activate virtual environment
 call .venv\Scripts\activate.bat
 
-rem Ensure Source_files exists
-if not exist "Source_files" (
-    echo [ERROR] Source_files directory not found!
-    echo.
-    pause
-    exit /b 1
-)
+rem Ensure folders exist
+if not exist "Source_files" mkdir Source_files
+if not exist "Existing_files" mkdir Existing_files
 
-rem Count PDFs
-set PDF_COUNT=0
-for %%f in (Source_files\*.pdf) do set /a PDF_COUNT+=1
+rem Count PDFs in both groups
+set SOURCE_COUNT=0
+for %%f in (Source_files\*.pdf) do set /a SOURCE_COUNT+=1
+
+set EXISTING_COUNT=0
+for %%f in (Existing_files\*.pdf) do set /a EXISTING_COUNT+=1
+
+set /a PDF_COUNT=%SOURCE_COUNT%+%EXISTING_COUNT%
 
 if %PDF_COUNT%==0 (
-    echo [ERROR] No PDF files found in Source_files\
+    echo [ERROR] No PDF files found in Source_files\ or Existing_files\
     echo.
     pause
     exit /b 1
 )
 
-echo Found %PDF_COUNT% PDF file(s):
-for %%f in (Source_files\*.pdf) do echo   - %%~nxf
+echo Found %PDF_COUNT% PDF file(s) total:
+echo   Existing_files: %EXISTING_COUNT%
+for %%f in (Existing_files\*.pdf) do echo     [existing] %%~nxf
+echo   Source_files: %SOURCE_COUNT%
+for %%f in (Source_files\*.pdf) do echo     [uploaded] %%~nxf
 echo.
 
 rem Run optimized indexer (clears/recreates Elasticsearch index)
@@ -64,7 +68,7 @@ echo        text chunk size: %TEXT_CHUNK_SIZE%
 echo        Elasticsearch URL: %ELASTICSEARCH_URL%
 echo        PYTHONPATH: %PYTHONPATH%
 echo.
-python scripts\optimized_indexer.py --chunk-size %BULK_CHUNK_SIZE% --text-chunk-size %TEXT_CHUNK_SIZE% --yes
+python scripts\optimized_indexer.py --pdf-dir Source_files --existing-dir Existing_files --chunk-size %BULK_CHUNK_SIZE% --text-chunk-size %TEXT_CHUNK_SIZE% --yes
 
 if errorlevel 1 (
     echo.
