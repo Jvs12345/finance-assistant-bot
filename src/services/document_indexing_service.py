@@ -52,11 +52,12 @@ class DocumentIndexingService:
 
         inferred_tax_year = metadata.get("tax_year") or self._infer_tax_year(source_filename, pages)
         inferred_jurisdiction = metadata.get("jurisdiction") or self._infer_jurisdiction(source_filename, pages)
-        resolved_category = self._resolve_document_type(category, source_filename, pages, metadata)
+        resolved_category, detailed_type = self._resolve_document_type(category, source_filename, pages, metadata)
 
         metadata["tax_year"] = inferred_tax_year
         metadata["jurisdiction"] = inferred_jurisdiction
         metadata["document_type"] = resolved_category
+        metadata["document_type_detail"] = detailed_type
         metadata["corpus_type"] = resolved_corpus_type
 
         upload_date = datetime.utcnow().isoformat()
@@ -121,23 +122,57 @@ class DocumentIndexingService:
         source_filename: str,
         pages: List[Dict[str, Any]],
         metadata: Dict[str, Any],
-    ) -> str:
+    ) -> tuple[str, str]:
         provided = (metadata.get("document_type") or category or "other").strip().lower()
         if provided and provided != "other":
-            return provided
+            return provided, provided
 
+        detailed_type = self._infer_document_type_detail(source_filename, pages)
+        category_map = {
+            "profit_loss": "other",
+            "balance_sheet": "other",
+            "vat_overview": "tax_return",
+            "client_notes": "correspondence",
+            "contract": "correspondence",
+            "insurance_document": "other",
+            "annual_accounts_checklist": "regulation",
+            "accounting_guidance": "regulation",
+            "vat_guidance": "regulation",
+            "insurance_guidance": "regulation",
+            "annual_report": "annual_report",
+            "invoice": "invoice",
+            "bank_statement": "bank_statement",
+            "tax_return": "tax_return",
+            "ledger": "ledger",
+            "tax_law": "tax_law",
+            "regulation": "regulation",
+            "correspondence": "correspondence",
+            "other": "other",
+        }
+        return category_map.get(detailed_type, "other"), detailed_type
+
+    def _infer_document_type_detail(self, source_filename: str, pages: List[Dict[str, Any]]) -> str:
         text_blob = f"{source_filename} " + " ".join(
-            p.get("content", "")[:1500] for p in pages[:3]
+            p.get("content", "")[:2000] for p in pages[:3]
         )
         normalized = text_blob.lower()
         mapping = [
+            ("profit_loss", ["winst-en-verliesrekening", "resultatenrekening", "profit and loss", "p&l", "statement of operations"]),
+            ("balance_sheet", ["balans", "balance sheet", "statement of financial position"]),
+            ("vat_overview", ["btw-overzicht", "btw aangifte", "omzetbelasting", "vat overview", "vat return", "omzet hoog tarief", "belastbare omzet"]),
+            ("client_notes", ["klantnotities", "klantnotitie", "client notes", "client memo"]),
+            ("contract", ["contract", "overeenkomst", "service agreement", "payment terms"]),
+            ("insurance_document", ["polis", "polisoverzicht", "verzekering", "dekking", "insured amount"]),
+            ("annual_accounts_checklist", ["jaarrekening checklist", "annual accounts checklist"]),
+            ("vat_guidance", ["btw controle", "btw checklist", "omzetbelasting controle"]),
+            ("insurance_guidance", ["verzekeringsrisico", "risico checklist", "insurance risk checklist"]),
             ("tax_law", ["tax law", "tax code", "belastingwet", "internal revenue code"]),
             ("regulation", ["regulation", "directive", "compliance rule", "ifrs", "gaap"]),
             ("annual_report", ["annual report", "form 10-k", "jaarverslag"]),
+            ("bank_statement", ["bankafschrift", "bank statement", "account statement", "iban"]),
             ("invoice", ["invoice", "factuur", "bill to"]),
             ("ledger", ["ledger", "general ledger", "trial balance", "grootboek"]),
-            ("bank_statement", ["bank statement", "account statement", "iban"]),
-            ("tax_return", ["tax return", "income tax return", "vat return", "belastingaangifte"]),
+            ("tax_return", ["tax return", "income tax return", "belastingaangifte"]),
             ("correspondence", ["dear", "regards", "sincerely", "letter", "email"]),
         ]
         for doc_type, keywords in mapping:
@@ -163,16 +198,31 @@ class DocumentIndexingService:
             p.get("content", "")[:2000] for p in pages[:3]
         )
         t = text_blob.lower()
-        mapping = [
-            ("Netherlands", ["netherlands", "dutch", "nederland", "belastingdienst"]),
-            ("EU", ["european union", "eu directive", "eu regulation"]),
-            ("Germany", ["germany", "deutschland", "bundesfinanzministerium"]),
-            ("UK", ["united kingdom", "uk", "hmrc", "companies house"]),
-            ("United States", ["united states", "u.s.", "usa", "irs", "sec", "form 10-k"]),
+        dutch_terms = [
+            "btw", "omzetbelasting", "jaarrekening", "balans", "winst-en-verliesrekening",
+            "klantnotities", "polis", "verzekering", "belastingdienst", "mkb", "vof", "bv", "nv",
+            "netherlands", "nederland", "dutch",
         ]
-        for jurisdiction, keywords in mapping:
-            if any(k in t for k in keywords):
-                return jurisdiction
+        us_terms = [
+            "sec", "form 10-k", "10-k", "10-q", "irs", "delaware", "united states",
+            "u.s.", "usa", "nasdaq", "nyse", "gaap",
+        ]
+        eu_terms = ["european union", "eu directive", "eu regulation"]
+        germany_terms = ["germany", "deutschland", "bundesfinanzministerium"]
+        uk_terms = ["united kingdom", " hmrc", "companies house"]
+
+        dutch_score = sum(1 for kw in dutch_terms if kw in t)
+        us_score = sum(1 for kw in us_terms if kw in t)
+        if dutch_score > 0 and dutch_score >= us_score:
+            return "Netherlands"
+        if us_score >= 2 and us_score > dutch_score:
+            return "United States"
+        if any(k in t for k in eu_terms):
+            return "EU"
+        if any(k in t for k in germany_terms):
+            return "Germany"
+        if any(k in t for k in uk_terms):
+            return "UK"
         return None
 
     def add_embeddings(self, documents: List[Dict[str, Any]], batch_size: int = 32) -> None:

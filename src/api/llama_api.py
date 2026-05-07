@@ -35,6 +35,7 @@ class SourceDocument(BaseModel):
     title: str
     score: float
     category: str
+    document_type_detail: Optional[str] = None
     page: Optional[int] = None
     snippet: Optional[str] = None
     jurisdiction: Optional[str] = None

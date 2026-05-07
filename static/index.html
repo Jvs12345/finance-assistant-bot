@@ -230,6 +230,9 @@
     <div class="header">
         <div class="title">Financial Document Assistant</div>
         <div class="subtitle">Q&A over tax, accounting, and financial documents.</div>
+        <div class="subtitle" style="margin-top:6px;color:#49606c;">
+            Deze assistent zoekt lokaal in de beschikbare documenten. Gebruik de uitkomsten als voorbereiding en controleer belangrijke conclusies altijd zelf.
+        </div>
     </div>
 
     <div class="chat-container" id="chatContainer">
@@ -237,15 +240,14 @@
             <div class="bubble">
                 Ask a question about your uploaded financial and tax documents.
                 <br><br>
-                <strong>Example questions:</strong>
+                <strong>Voorbeeldvragen:</strong>
                 <ul class="examples" id="exampleQuestions">
-                    <li onclick="setMessage('Which expenses in these files look deductible?')">Which expenses in these files look deductible?</li>
-                    <li onclick="setMessage('What tax obligations are mentioned for this client?')">What tax obligations are mentioned for this client?</li>
-                    <li onclick="setMessage('Where do these documents mention VAT rules?')">Where do these documents mention VAT rules?</li>
-                    <li onclick="setMessage('Summarize the key tax obligations mentioned in these files.')">Summarize the key tax obligations mentioned in these files.</li>
-                    <li onclick="setMessage('What information is still missing before drafting a tax position?')">What information is still missing before drafting a tax position?</li>
-                    <li onclick="setMessage('Do these files contain inconsistent numbers?')">Do these files contain inconsistent numbers?</li>
-                    <li onclick="setMessage('Explain this tax rule in simple language and quote the source.')">Explain this tax rule in simple language and quote the source.</li>
+                    <li onclick="setMessage('Welke informatie ontbreekt nog voordat de jaarrekening kan worden opgesteld?')">Welke informatie ontbreekt nog voordat de jaarrekening kan worden opgesteld?</li>
+                    <li onclick="setMessage('Controleer of er inconsistenties zijn tussen de winst-en-verliesrekening, btw-overzicht en klantnotities.')">Controleer of er inconsistenties zijn tussen de winst-en-verliesrekening, btw-overzicht en klantnotities.</li>
+                    <li onclick="setMessage('Welke drie adviespunten kan ik met deze MKB-klant bespreken op basis van de documenten?')">Welke drie adviespunten kan ik met deze MKB-klant bespreken op basis van de documenten?</li>
+                    <li onclick="setMessage('Welke verzekeringsrisico’s zie je op basis van de bedrijfsactiviteiten, activa en contractinformatie?')">Welke verzekeringsrisico’s zie je op basis van de bedrijfsactiviteiten, activa en contractinformatie?</li>
+                    <li onclick="setMessage('Vat de belangrijkste punten uit dit klantdossier samen.')">Vat de belangrijkste punten uit dit klantdossier samen.</li>
+                    <li onclick="setMessage('Bereken de omzetgroei als de benodigde cijfers beschikbaar zijn.')">Bereken de omzetgroei als de benodigde cijfers beschikbaar zijn.</li>
                 </ul>
             </div>
         </div>
@@ -412,6 +414,47 @@
         }
 
         function renderSourceCards(sources, answerText) {
+            const dutchSignals = [
+                "btw", "omzetbelasting", "jaarrekening", "balans", "winst-en-verliesrekening",
+                "klantnotities", "polis", "verzekering", "belastingdienst", "mkb", "nederland"
+            ];
+            const statementSignals = ["winst-en-verliesrekening", "resultatenrekening", "profit and loss", "p&l", "balans", "balance sheet"];
+            const typeLabels = {
+                profit_loss: "profit_loss",
+                balance_sheet: "balance_sheet",
+                vat_overview: "vat_overview",
+                client_notes: "client_notes",
+                contract: "contract",
+                insurance_document: "insurance_document",
+                annual_accounts_checklist: "annual_accounts_checklist",
+                accounting_guidance: "accounting_guidance",
+                vat_guidance: "vat_guidance",
+                insurance_guidance: "insurance_guidance",
+            };
+
+            function hasDutchContext(text) {
+                const t = (text || "").toLowerCase();
+                return dutchSignals.some((s) => t.includes(s));
+            }
+
+            function resolveType(source, contextText) {
+                const detail = (source.document_type_detail || "").toLowerCase();
+                if (detail && detail !== "other") return typeLabels[detail] || detail;
+                const category = (source.category || "").toLowerCase();
+                if (category === "other" || !category) return "";
+                if (category === "invoice" && hasDutchContext(contextText) && statementSignals.some((s) => contextText.toLowerCase().includes(s))) {
+                    return "";
+                }
+                return category;
+            }
+
+            function resolveJurisdiction(source, contextText) {
+                const jurisdiction = source.jurisdiction || "";
+                if (!jurisdiction || jurisdiction.toLowerCase() === "unknown") return "";
+                if (jurisdiction === "United States" && hasDutchContext(contextText)) return "";
+                return jurisdiction;
+            }
+
             return sources.map((s) => {
                 const fragment = buildPdfFragment(s);
                 const docId = String(s.document_id || "");
@@ -422,6 +465,16 @@
                     : (s.document_id ? `/api/v1/documents/${s.document_id}/view${fragment}` : "#");
                 const escapedSnippet = escapeHtml(s.snippet || "");
                 const escapedAnswerText = escapeHtml(answerText || "");
+                const contextText = `${s.filename || ""} ${s.title || ""} ${s.snippet || ""}`;
+                const resolvedType = resolveType(s, contextText);
+                const resolvedJurisdiction = resolveJurisdiction(s, contextText);
+                const metaParts = [
+                    `Score: ${Number(s.score || 0).toFixed(2)}`,
+                    `Page: ${s.page || "N/A"}`
+                ];
+                if (resolvedType) metaParts.push(`Type: ${resolvedType}`);
+                if (resolvedJurisdiction) metaParts.push(`Jurisdiction: ${resolvedJurisdiction}`);
+                if (s.tax_year && s.tax_year !== "unknown") metaParts.push(`Tax year: ${s.tax_year}`);
 
                 return `
                     <a href="${rawPdfUrl}" target="_blank" class="source-item"
@@ -432,11 +485,7 @@
                         onclick="return openSourcePdf(event, this)">
                         <div><strong>${s.filename || "Document"}</strong></div>
                         <div class="source-meta">
-                            Score: ${Number(s.score || 0).toFixed(2)}
-                            | Page: ${s.page || "N/A"}
-                            | Type: ${s.category || "other"}
-                            | Jurisdiction: ${s.jurisdiction || "unknown"}
-                            | Tax year: ${s.tax_year || "unknown"}
+                            ${metaParts.join(" | ")}
                         </div>
                         ${s.snippet ? `<div class="source-snippet">${escapeHtml(s.snippet)}</div>` : ""}
                     </a>
@@ -444,11 +493,27 @@
             }).join("");
         }
 
+        function stripTrailingSourceSection(answerText) {
+            if (!answerText) return "";
+            const sourceHeaderMatch = answerText.match(/\n(?:Bronnen|Sources):\s*$/i);
+            if (sourceHeaderMatch) {
+                return answerText.slice(0, sourceHeaderMatch.index).trimEnd();
+            }
+            const trailingBlockMatch = answerText.match(/\n(?:Bronnen|Sources):\s*\n(?:[-*].*\n?)+\s*$/i);
+            if (trailingBlockMatch) {
+                return answerText.slice(0, trailingBlockMatch.index).trimEnd();
+            }
+            return answerText;
+        }
+
         function addMessage(role, text, sources = [], warnings = [], metaLine = "") {
             const node = document.createElement("div");
             node.className = `message ${role}`;
 
-            let html = text.replace(/\n/g, "<br>");
+            const visibleText = (role === "ai" && sources && sources.length > 0)
+                ? stripTrailingSourceSection(text)
+                : text;
+            let html = visibleText.replace(/\n/g, "<br>");
             if (role === "ai" && warnings && warnings.length > 0) {
                 html += `<div class="source-meta" style="margin-top:8px;color:#8a6d3b">${warnings.map(escapeHtml).join("<br>")}</div>`;
             }
@@ -456,7 +521,7 @@
                 html += `<div class="source-meta" style="margin-top:8px">${escapeHtml(metaLine)}</div>`;
             }
             if (role === "ai" && sources && sources.length > 0) {
-                html += `<div class="sources"><strong>Sources used</strong><div style="margin-top:8px">${renderSourceCards(sources, text)}</div></div>`;
+                html += `<div class="sources"><strong>Gebruikte bronnen</strong><div style="margin-top:8px">${renderSourceCards(sources, visibleText)}</div></div>`;
             }
 
             node.innerHTML = `<div class="bubble">${html}</div>`;

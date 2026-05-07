@@ -10,6 +10,8 @@ from src.services.ollama_client import chat as ollama_chat, list_models as ollam
 from src.services.calculation_sandbox import CalculationSandbox, CalculationSandboxError
 from src.services.formula_registry import get_formula_registry, FormulaDefinition
 from src.services.financial_value_extractor import FinancialValueExtractor
+from src.services.advisor_intents import detect_advisor_intent
+from src.services.verification_service import AnswerVerificationService
 from src.config import settings
 from src.utils.logging import get_logger
 
@@ -40,6 +42,138 @@ class LlamaService:
         "```\n"
         "If data is missing, do not include this block.\n"
     )
+    WORKFLOW_PROMPT_RULES = (
+        "Workflow rules:\n"
+        "1. Use only the retrieved document context.\n"
+        "2. Show source references for claims.\n"
+        "3. Keep evidence separate from interpretation.\n"
+        "4. If information is missing, say that clearly.\n"
+        "5. Do not provide final certified accounting, tax, legal, or insurance advice.\n"
+        "6. Include practical next steps.\n"
+        "7. If the user asks in Dutch, answer in natural professional Dutch.\n"
+    )
+    INTENT_RETRIEVAL_TERMS = {
+        "missing_info_check": [
+            "jaarrekening", "annual accounts", "balance sheet", "balans", "profit and loss",
+            "winst-en-verliesrekening", "btw", "btw-overzicht", "bank", "invoice", "factuur",
+            "depreciation", "afschrijving", "loan", "lening", "assets", "activa",
+            "liabilities", "schulden", "notes", "klantnotities", "contract",
+        ],
+        "inconsistency_check": [
+            "winst-en-verliesrekening", "profit and loss", "omzet", "revenue", "kosten",
+            "expenses", "btw-overzicht", "vat", "klantnotities", "invoices", "facturen",
+            "sales", "purchases",
+        ],
+        "advisory_points": [
+            "omzet", "revenue", "margin", "marge", "kosten", "cash flow", "liquiditeit",
+            "tax", "vat", "btw", "risk", "risico", "contract", "growth", "groei", "decline",
+            "daling", "customer", "klant", "supplier", "leverancier",
+        ],
+        "insurance_risk_check": [
+            "insurance", "verzekering", "verzekeringsrisico", "assets", "activa", "equipment",
+            "inventaris", "voorraad", "inventory", "contract", "liability", "aansprakelijkheid",
+            "cyber", "transport", "bedrijfsactiviteiten", "business activity",
+        ],
+        "client_file_summary": [
+            "financial statements", "winst-en-verliesrekening", "balans", "tax", "vat", "btw",
+            "klantnotities", "contract", "insurance", "verzekering", "cash flow", "liquiditeit",
+        ],
+    }
+    WORKFLOW_INTENTS = {
+        "missing_info_check",
+        "inconsistency_check",
+        "advisory_points",
+        "insurance_risk_check",
+        "client_file_summary",
+    }
+    TICKER_STOPWORDS = {
+        "MKB", "SME", "BV", "NV", "ZZP", "BTW", "VAT", "KPI", "AI", "API",
+        "P", "L", "IB", "VPB", "EU", "NL", "PDF", "OCR", "IFRS", "GAAP",
+    }
+    CLIENT_DOC_HINTS = [
+        "winst", "verlies", "balans", "btw", "klantnotities", "contract", "polis",
+        "bank", "factuur", "invoice", "voorraad", "liquiditeit",
+    ]
+    REFERENCE_DOC_HINTS = ["referentie", "checklist", "belastingdienst", "guidance", "framework"]
+    MISSING_INFO_CHECK_ITEMS = [
+        {
+            "key": "bank_support",
+            "label": "Bankafschriften",
+            "terms": ["bankafschrift", "bank statement", "bank statements", "banktransactie", "bank transaction"],
+            "why": "Bankafschriften zijn nodig om kas- en bankmutaties en eindsaldi te controleren.",
+            "next_step": "Vraag de ontbrekende bankafschriften of een transactiedetail per periode op.",
+        },
+        {
+            "key": "invoice_support",
+            "label": "Factuuronderbouwing",
+            "terms": ["factuur", "invoice", "sales invoice", "purchase invoice", "crediteuren", "debiteuren"],
+            "why": "Facturen zijn nodig om omzet, kosten en btw-aansluitingen te onderbouwen.",
+            "next_step": "Controleer of inkoop- en verkoopfacturen compleet en herleidbaar zijn.",
+        },
+        {
+            "key": "inventory_value",
+            "label": "Voorraadwaarde",
+            "terms": ["voorraad", "inventory", "stock", "inventaris"],
+            "why": "De voorraadwaardering beïnvloedt zowel het resultaat als de balans.",
+            "next_step": "Vraag een voorraadopstelling met waarderingsmethode en peildatum op.",
+        },
+        {
+            "key": "depreciation_assets",
+            "label": "Afschrijvingen en activa-details",
+            "terms": ["afschrijving", "depreciation", "fixed assets", "materiele vaste activa", "intangible assets"],
+            "why": "Activa- en afschrijvingsspecificaties zijn nodig om het resultaat en de balanswaarden te onderbouwen.",
+            "next_step": "Controleer activa-specificaties, aanschafwaarden, en afschrijvingsschema.",
+        },
+        {
+            "key": "loans_liabilities",
+            "label": "Leningen en schulden",
+            "terms": ["lening", "loan", "liability", "schuld", "schulden", "krediet"],
+            "why": "Lening- en schuldenspecificaties zijn nodig om verplichtingen, aflossingen en rentelasten te controleren.",
+            "next_step": "Vraag leningsovereenkomsten, aflossingsschema, en renteoverzicht op.",
+        },
+        {
+            "key": "vat_reconciliation",
+            "label": "BTW-aansluiting",
+            "terms": ["btw", "vat", "btw-overzicht", "omzetbelasting", "vat return"],
+            "why": "Een btw-aansluiting is nodig om omzet, aangiften en grootboekmutaties op elkaar aan te laten sluiten.",
+            "next_step": "Vergelijk btw-overzicht met omzet en grootboekmutaties per periode.",
+        },
+        {
+            "key": "contract_details",
+            "label": "Contractdetails",
+            "terms": ["contract", "overeenkomst", "service agreement", "payment terms", "betaaltermijn"],
+            "why": "Contractvoorwaarden helpen om omzetmomenten, verplichtingen en risico’s te onderbouwen.",
+            "next_step": "Controleer contracten op looptijd, prijsafspraken, en verplichtingen.",
+        },
+        {
+            "key": "insurance_coverage",
+            "label": "Verzekeringsinformatie",
+            "terms": ["verzekering", "polis", "coverage", "insured amount", "aansprakelijkheid"],
+            "why": "Verzekeringsinformatie is relevant voor risicobeoordeling en continuïteit.",
+            "next_step": "Vraag polisvoorwaarden en dekking per risicocategorie op.",
+        },
+    ]
+    WORKFLOW_HINT_TERMS = {
+        "missing_info_check": [
+            "ontbreekt", "ontbrekend", "niet aangeleverd", "onduidelijk", "nog te ontvangen",
+            "geen specificatie", "factuur ontbreekt", "bankafschrift ontbreekt",
+            "voorraadwaarde onduidelijk", "contract niet volledig", "polis ontbreekt",
+            "afschrijving", "lening", "schuld", "activa",
+        ],
+        "inconsistency_check": [
+            "omzet", "btw", "btw-overzicht", "winst-en-verliesrekening", "verschil",
+            "aansluiting", "komt niet overeen", "klantnotities", "facturen", "verkoop", "inkoop",
+        ],
+        "advisory_points": [
+            "omzet", "marge", "kosten", "liquiditeit", "btw", "risico", "voorraad",
+            "contract", "klant", "leverancier", "groei", "daling", "ontbreekt", "verzekering",
+        ],
+        "insurance_risk_check": [
+            "verzekering", "polis", "dekking", "voorraad", "inventaris", "activa",
+            "bedrijfsmiddelen", "contract", "aansprakelijkheid", "cyber", "klantdata",
+            "transport", "onderverzekering",
+        ],
+    }
 
     def __init__(self, model: str = "llama3.2"):
         if settings.demo_mode and settings.demo_ollama_model:
@@ -49,6 +183,7 @@ class LlamaService:
         self.es_client = get_elasticsearch_client()
         self.formula_registry = get_formula_registry()
         self.value_extractor = FinancialValueExtractor(self.formula_registry)
+        self.verification_service = AnswerVerificationService()
         self.retrieval_top_k = max(1, int(settings.retrieval_top_k))
         self.final_context_chunks = max(1, int(settings.final_context_chunks))
         self.max_context_chars = max(200, int(settings.max_context_chars))
@@ -78,6 +213,8 @@ class LlamaService:
         try:
             logger.info(f"Financial question: {question}")
             request_started = perf_counter()
+            detected_intent = self._detect_advisor_intent(question)
+            logger.info(f"Detected advisor intent: {detected_intent}")
             timing = {
                 "retrieval_ms": 0.0,
                 "consistency_ms": 0.0,
@@ -89,6 +226,36 @@ class LlamaService:
             }
 
             def finalize(payload: Dict[str, Any]) -> Dict[str, Any]:
+                answer_text = payload.get("answer")
+                if isinstance(answer_text, str) and payload.get("found_documents", False):
+                    verification = self.verification_service.verify(
+                        question=question,
+                        answer=answer_text,
+                        sources=payload.get("sources", []) or [],
+                        search_results=search_results,
+                    )
+                    if verification.status == "fail":
+                        if detected_intent == "inconsistency_check":
+                            repaired_answer = self._build_inconsistency_answer_verified(search_results)
+                            repaired_verification = self.verification_service.verify(
+                                question=question,
+                                answer=repaired_answer,
+                                sources=payload.get("sources", []) or [],
+                                search_results=search_results,
+                            )
+                            if repaired_verification.status == "pass":
+                                payload["answer"] = repaired_answer
+                                payload["warnings"] = (payload.get("warnings") or []) + [
+                                    "Inconsistentie-antwoord automatisch hersteld na bron- en rekencontrole."
+                                ]
+                            else:
+                                payload["answer"] = repaired_answer
+                                payload["warnings"] = (payload.get("warnings") or []) + [
+                                    "Inconsistentie-antwoord herbouwd met strengere labels/perioden; handmatige controle blijft nodig."
+                                ] + repaired_verification.issues
+                        else:
+                            payload["answer"] = verification.safe_answer
+                            payload["warnings"] = (payload.get("warnings") or []) + verification.issues
                 total_ms = (perf_counter() - request_started) * 1000
                 if self._latency_logs_enabled():
                     logger.info(
@@ -107,14 +274,16 @@ class LlamaService:
                 "tax_year": tax_year,
                 "entity_type": entity_type,
                 "client_name": client_name,
+                "intent": detected_intent,
             }
+            retrieval_query = self._build_intent_retrieval_query(question, detected_intent)
             retrieval_limit = max(1, min(max_context_docs or self.retrieval_top_k, 20))
 
             retrieval_started = perf_counter()
-            search_results = self.es_client.search(
-                query=question,
-                limit=retrieval_limit,
-                enable_fuzzy=True,
+            search_results = self._retrieve_with_intent_strategy(
+                question=retrieval_query,
+                detected_intent=detected_intent,
+                retrieval_limit=retrieval_limit,
                 system_context=system_context,
                 jurisdiction=jurisdiction,
                 tax_year=tax_year,
@@ -122,15 +291,14 @@ class LlamaService:
                 client_name=client_name,
                 document_type=document_type,
                 corpus_type=corpus_type,
-                use_vector=True,
             )
-            search_results = self._deduplicate_results(search_results, limit=retrieval_limit)
             timing["retrieval_ms"] = (perf_counter() - retrieval_started) * 1000
 
             consistency_started = perf_counter()
             search_results, consistency_error, consistency_notes = self._enforce_source_consistency(
                 question=question,
                 search_results=search_results,
+                intent=detected_intent,
             )
             timing["consistency_ms"] = (perf_counter() - consistency_started) * 1000
 
@@ -154,7 +322,7 @@ class LlamaService:
                     "warnings": consistency_notes,
                 })
 
-            if self._is_low_confidence(question, search_results):
+            if detected_intent not in self.WORKFLOW_INTENTS and self._is_low_confidence(question, search_results):
                 return finalize({
                     "answer": self._low_confidence_response(),
                     "sources": self._format_sources(search_results, list(range(min(2, len(search_results))))),
@@ -164,22 +332,46 @@ class LlamaService:
                     "filters_used": filters_used,
                 })
 
-            context_requirements = self._detect_context_requirements(question)
-            missing_context_message = self._build_missing_context_message(
-                context_requirements=context_requirements,
-                jurisdiction=jurisdiction,
-                tax_year=tax_year,
-                entity_type=entity_type,
-                search_results=search_results
-            )
-            if missing_context_message:
+            if detected_intent not in self.WORKFLOW_INTENTS:
+                context_requirements = self._detect_context_requirements(question)
+                missing_context_message = self._build_missing_context_message(
+                    context_requirements=context_requirements,
+                    jurisdiction=jurisdiction,
+                    tax_year=tax_year,
+                    entity_type=entity_type,
+                    search_results=search_results
+                )
+                if missing_context_message:
+                    return finalize({
+                        "answer": missing_context_message,
+                        "sources": self._format_sources(search_results, list(range(min(3, len(search_results))))),
+                        "model": self.model,
+                        "found_documents": True,
+                        "num_documents_used": len(search_results),
+                        "filters_used": filters_used,
+                    })
+
+            if detected_intent == "missing_info_check":
+                missing_info_answer = self._build_missing_info_answer(search_results)
                 return finalize({
-                    "answer": missing_context_message,
-                    "sources": self._format_sources(search_results, list(range(min(3, len(search_results))))),
+                    "answer": missing_info_answer,
+                    "sources": self._format_sources(search_results, list(range(min(5, len(search_results))))),
                     "model": self.model,
                     "found_documents": True,
                     "num_documents_used": len(search_results),
                     "filters_used": filters_used,
+                    "warnings": consistency_notes,
+                })
+            if detected_intent in {"inconsistency_check", "advisory_points", "insurance_risk_check", "client_file_summary"}:
+                workflow_answer = self._build_workflow_answer(detected_intent, search_results, question=question)
+                return finalize({
+                    "answer": workflow_answer,
+                    "sources": self._format_sources(search_results, list(range(min(5, len(search_results))))),
+                    "model": self.model,
+                    "found_documents": True,
+                    "num_documents_used": len(search_results),
+                    "filters_used": filters_used,
+                    "warnings": consistency_notes,
                 })
 
             formula_started = perf_counter()
@@ -234,7 +426,8 @@ class LlamaService:
             prompt = self._create_prompt(
                 question=question,
                 context=context,
-                history=history
+                history=history,
+                intent=detected_intent,
             )
             timing["prompt_ms"] = (perf_counter() - prompt_started) * 1000
 
@@ -302,6 +495,102 @@ class LlamaService:
                 break
         return deduped
 
+    def _retrieve_with_intent_strategy(
+        self,
+        question: str,
+        detected_intent: str,
+        retrieval_limit: int,
+        system_context: Optional[str],
+        jurisdiction: Optional[str],
+        tax_year: Optional[int],
+        entity_type: Optional[str],
+        client_name: Optional[str],
+        document_type: Optional[str],
+        corpus_type: Optional[str],
+    ) -> List[Dict[str, Any]]:
+        if detected_intent not in self.WORKFLOW_INTENTS:
+            rows = self.es_client.search(
+                query=question,
+                limit=retrieval_limit,
+                enable_fuzzy=True,
+                system_context=system_context,
+                jurisdiction=jurisdiction,
+                tax_year=tax_year,
+                entity_type=entity_type,
+                client_name=client_name,
+                document_type=document_type,
+                corpus_type=corpus_type,
+                use_vector=True,
+            )
+            return self._deduplicate_results(rows, limit=retrieval_limit)
+
+        base_rows = self.es_client.search(
+            query=question,
+            limit=retrieval_limit,
+            enable_fuzzy=True,
+            system_context=system_context,
+            jurisdiction=jurisdiction,
+            tax_year=tax_year,
+            entity_type=entity_type,
+            client_name=client_name,
+            document_type=document_type,
+            corpus_type=corpus_type,
+            use_vector=True,
+        )
+        uploaded_rows = self.es_client.search(
+            query=question,
+            limit=retrieval_limit,
+            enable_fuzzy=True,
+            system_context=system_context,
+            jurisdiction=jurisdiction,
+            tax_year=tax_year,
+            entity_type=entity_type,
+            client_name=client_name,
+            document_type=document_type,
+            corpus_type="uploaded",
+            use_vector=True,
+        )
+        existing_rows = self.es_client.search(
+            query=question,
+            limit=max(3, retrieval_limit // 2),
+            enable_fuzzy=True,
+            system_context=system_context,
+            jurisdiction=jurisdiction,
+            tax_year=tax_year,
+            entity_type=entity_type,
+            client_name=client_name,
+            document_type=document_type,
+            corpus_type="existing",
+            use_vector=True,
+        )
+
+        merged = self._deduplicate_results(uploaded_rows + base_rows + existing_rows, limit=None)
+        prioritized = self._prioritize_advisor_results(merged)
+        return prioritized[:retrieval_limit]
+
+    def _prioritize_advisor_results(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        rescored: List[Tuple[float, Dict[str, Any]]] = []
+        for row in rows:
+            score = float(row.get("score", 0.0) or 0.0)
+            text = self._row_text(row)
+            filename = str(row.get("filename", "")).lower()
+            corpus = str(row.get("corpus_type", "")).lower()
+
+            if corpus == "uploaded":
+                score += 5.0
+            elif corpus == "existing":
+                score += 1.0
+
+            if any(tag in text or tag in filename for tag in self.CLIENT_DOC_HINTS):
+                score += 2.5
+            if any(tag in text or tag in filename for tag in self.REFERENCE_DOC_HINTS):
+                score += 0.5
+
+            rescored.append((score, row))
+
+        rescored.sort(key=lambda x: x[0], reverse=True)
+        return [row for _, row in rescored]
+
     def _build_context(self, search_results: List[Dict[str, Any]], label_prefix: str = "Document") -> str:
         context_parts = []
         used_chars = 0
@@ -362,7 +651,8 @@ class LlamaService:
         self,
         question: str,
         context: str,
-        history: Optional[List[Dict[str, str]]] = None
+        history: Optional[List[Dict[str, str]]] = None,
+        intent: str = "normal_qna",
     ) -> str:
         history_text = ""
         if history:
@@ -377,19 +667,114 @@ class LlamaService:
         if self._is_calc_intent_fast(question):
             formula_hints = self.formula_registry.render_prompt_hints(question, max_results=4)
         formula_hints_block = f"\n{formula_hints}\n" if formula_hints else ""
+        workflow_output = self._workflow_output_format(intent)
 
         return (
             "You are a financial document assistant. You help users understand tax law, accounting documents, "
             "and financial records based only on the documents provided to you.\n\n"
             f"{self.BASE_PROMPT_RULES}\n"
+            f"{self.WORKFLOW_PROMPT_RULES}\n"
             f"Retrieved documents:\n{context}\n{formula_hints_block}\n"
             f"{history_text}User Question: {question}\n\n"
-            "Answer in this exact structure:\n"
+            f"Answer in this exact structure:\n{workflow_output}\n\n"
+            "Answer:"
+        )
+
+    def _workflow_output_format(self, intent: str) -> str:
+        if intent == "missing_info_check":
+            return (
+                "Kort antwoord:\n"
+                "[korte samenvatting]\n\n"
+                "Gevonden informatie:\n"
+                "- [item], bron: [document/pagina]\n\n"
+                "Ontbrekende of onduidelijke informatie:\n"
+                "- [punt]\n\n"
+                "Waarom dit belangrijk is:\n"
+                "[korte toelichting]\n\n"
+                "Volgende stap:\n"
+                "[wat op te vragen of te controleren]\n\n"
+                "Bronnen:\n"
+                "[bronnenlijst]"
+            )
+        if intent == "inconsistency_check":
+            return (
+                "Kort antwoord:\n"
+                "[korte samenvatting]\n\n"
+                "Mogelijke inconsistenties:\n"
+                "1. [issue]\n"
+                "   - Bewijs A: [document/pagina]\n"
+                "   - Bewijs B: [document/pagina]\n"
+                "   - Waarom dit mogelijk inconsistent is: [korte toelichting]\n\n"
+                "Geen duidelijke inconsistentie gevonden:\n"
+                "- [optioneel]\n\n"
+                "Volgende stap:\n"
+                "[wat handmatig te verifieren]\n\n"
+                "Bronnen:\n"
+                "[bronnenlijst]"
+            )
+        if intent == "advisory_points":
+            return (
+                "Kort antwoord:\n"
+                "Hier zijn drie adviespunten om met de klant te bespreken.\n\n"
+                "Adviespunten om met de klant te bespreken:\n"
+                "1. [adviespunt]\n"
+                "   - Waarom dit belangrijk is:\n"
+                "   - Bewijs/bron:\n"
+                "   - Vraag aan de klant:\n\n"
+                "2. [adviespunt]\n"
+                "   - Waarom dit belangrijk is:\n"
+                "   - Bewijs/bron:\n"
+                "   - Vraag aan de klant:\n\n"
+                "3. [adviespunt]\n"
+                "   - Waarom dit belangrijk is:\n"
+                "   - Bewijs/bron:\n"
+                "   - Vraag aan de klant:\n\n"
+                "Belangrijke opmerking:\n"
+                "Dit zijn voorbereidingspunten, geen definitief advies.\n\n"
+                "Bronnen:\n"
+                "[bronnenlijst]"
+            )
+        if intent == "insurance_risk_check":
+            return (
+                "Kort antwoord:\n"
+                "[korte samenvatting]\n\n"
+                "Mogelijke verzekeringsrisico’s:\n"
+                "1. [risico]\n"
+                "   - Bewijs:\n"
+                "   - Waarom dit belangrijk is:\n"
+                "   - Wat te controleren:\n\n"
+                "2. [risico]\n"
+                "   - Bewijs:\n"
+                "   - Waarom dit belangrijk is:\n"
+                "   - Wat te controleren:\n\n"
+                "Ontbrekende informatie:\n"
+                "- [ontbrekend punt]\n\n"
+                "Bronnen:\n"
+                "[bronnenlijst]"
+            )
+        if intent == "client_file_summary":
+            return (
+                "Samenvatting klantdossier:\n\n"
+                "Bedrijfsactiviteit:\n"
+                "[samenvatting]\n\n"
+                "Financiële punten:\n"
+                "- [punt]\n\n"
+                "Belasting-/btw-punten:\n"
+                "- [punt]\n\n"
+                "Risico’s of aandachtspunten:\n"
+                "- [punt]\n\n"
+                "Ontbrekende informatie:\n"
+                "- [punt]\n\n"
+                "Vervolgvragen:\n"
+                "- [vraag]\n\n"
+                "Bronnen:\n"
+                "[bronnenlijst]"
+            )
+        return (
             "1. Direct answer\n"
             "2. Evidence from documents\n"
             "3. Important assumptions or missing information\n"
-            "4. Suggested next step\n\n"
-            "Answer:"
+            "4. Suggested next step"
         )
 
     def _generate_llama_answer(self, prompt: str, temperature: float) -> str:
@@ -611,6 +996,744 @@ class LlamaService:
             return False
         return bool(self.formula_registry.find_by_question(question, max_results=1))
 
+    def _detect_advisor_intent(self, question: str) -> str:
+        return detect_advisor_intent(
+            question=question,
+            is_calculation=self._is_calc_intent_fast(question),
+        )
+
+    def _build_intent_retrieval_query(self, question: str, intent: str) -> str:
+        terms = self.INTENT_RETRIEVAL_TERMS.get(intent)
+        if not terms:
+            return question
+
+        base_tokens = set(re.findall(r"\w+", (question or "").lower()))
+        extras: List[str] = []
+        for term in terms:
+            term_tokens = set(re.findall(r"\w+", term.lower()))
+            if term_tokens.issubset(base_tokens):
+                continue
+            extras.append(term)
+
+        if not extras:
+            return question
+
+        expanded = f"{question} {' '.join(extras)}".strip()
+        logger.info("Intent retrieval expansion applied for %s with %d terms", intent, len(extras))
+        return expanded
+
+    def _build_missing_info_answer(self, search_results: List[Dict[str, Any]]) -> str:
+        client_rows, reference_rows = self._split_client_reference_rows(search_results)
+        found_rows: List[str] = []
+        missing_rows: List[str] = []
+        why_rows: List[str] = []
+        next_rows: List[str] = []
+        source_lines: List[str] = self._collect_source_lines(search_results, limit=8)
+
+        for item in self.MISSING_INFO_CHECK_ITEMS:
+            explicit_missing = None
+            client_evidence = None
+            checklist_evidence = None
+            for row in client_rows:
+                text = self._row_text(row)
+                if any(term in text for term in item["terms"]) and self._contains_missing_signal(text):
+                    explicit_missing = row
+                    break
+                if any(term in text for term in item["terms"]):
+                    client_evidence = row
+            if explicit_missing:
+                missing_rows.append(
+                    f"- {item['label']}: expliciet genoemd als ontbrekend/onduidelijk, bron: {self._row_source_label(explicit_missing)}"
+                )
+            elif client_evidence:
+                found_rows.append(f"- {item['label']}, bron: {self._row_source_label(client_evidence)}")
+            else:
+                for row in reference_rows:
+                    text = self._row_text(row)
+                    if any(term in text for term in item["terms"]):
+                        checklist_evidence = row
+                        break
+                if checklist_evidence:
+                    missing_rows.append(
+                        f"- {item['label']}: aandachtspunt op basis van checklist, niet bevestigd in klantdocumenten (bron checklist: {self._row_source_label(checklist_evidence)})"
+                    )
+
+            why_rows.append(f"- {item['label']}: {item['why']}")
+            next_rows.append(f"- {item['label']}: {item['next_step']}")
+
+        if not found_rows:
+            found_rows.append("- Beperkte concrete onderbouwing in de opgehaalde klantdocumenten.")
+        if not missing_rows:
+            missing_rows.append("- Geen expliciet ontbrekende punten gevonden in de opgehaalde tekst. Controle op volledigheid blijft nodig.")
+
+        return (
+            "Kort antwoord:\n"
+            "Op basis van de beschikbare documenten lijken meerdere jaarrekening-onderdelen nog onduidelijk of vragen ze extra onderbouwing.\n\n"
+            "Gevonden informatie:\n"
+            + "\n".join(found_rows[:10])
+            + "\n\n"
+            "Ontbrekende of onduidelijke informatie:\n"
+            + "\n".join(missing_rows[:10])
+            + "\n\n"
+            "Waarom dit belangrijk is:\n"
+            + "\n".join(why_rows[:5])
+            + "\n\n"
+            "Volgende stap:\n"
+            + "\n".join(next_rows[:5])
+            + "\n\n"
+            "Bronnen:\n"
+            + "\n".join(source_lines)
+        ).strip()
+
+    def _find_item_evidence(self, terms: List[str], search_results: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        for row in search_results:
+            haystack = " ".join(
+                [
+                    str(row.get("title", "")),
+                    str(row.get("filename", "")),
+                    str(row.get("summary", "")),
+                    str(row.get("snippet", "")),
+                    str(row.get("content", ""))[:4000],
+                ]
+            ).lower()
+            for term in terms:
+                if term.lower() in haystack:
+                    return row
+        return None
+
+    def _build_workflow_answer(self, intent: str, search_results: List[Dict[str, Any]], question: Optional[str] = None) -> str:
+        if intent == "inconsistency_check":
+            return self._build_inconsistency_answer(search_results, question=question)
+        if intent == "advisory_points":
+            return self._build_advisory_points_answer(search_results)
+        if intent == "insurance_risk_check":
+            return self._build_insurance_risk_answer(search_results)
+        if intent == "client_file_summary":
+            return self._build_client_file_summary_answer(search_results)
+        return self._build_missing_info_answer(search_results)
+
+    def _row_text(self, row: Dict[str, Any]) -> str:
+        return " ".join(
+            [
+                str(row.get("title", "")),
+                str(row.get("filename", "")),
+                str(row.get("summary", "")),
+                str(row.get("snippet", "")),
+                str(row.get("content", "")),
+            ]
+        ).lower()
+
+    def _normalize_text(self, text: str) -> str:
+        return re.sub(r"\s+", " ", (text or "").lower()).strip()
+
+    def _detect_row_kind(self, row: Dict[str, Any]) -> str:
+        doc_type = self._normalize_text(str(row.get("document_type", "")))
+        doc_detail = self._normalize_text(str(row.get("document_type_detail", "")))
+        category = self._normalize_text(str(row.get("category", "")))
+        filename = self._normalize_text(str(row.get("filename", "")))
+        title = self._normalize_text(str(row.get("title", "")))
+        content = self._normalize_text(str(row.get("content", "")))
+        summary = self._normalize_text(str(row.get("summary", "")))
+        text = " ".join([doc_type, doc_detail, category, filename, title, content[:2500], summary[:1000]])
+
+        note_terms = ["klantnotities", "klantnotitie", "client notes", "memo", "notitie"]
+        vat_terms = ["btw-overzicht", "btw aangifte", "omzetbelasting", "vat overview", "taxable turnover", "vat turnover"]
+        pnl_terms = ["winst-en-verliesrekening", "resultatenrekening", "profit and loss", "p&l", "income statement"]
+
+        if any(t in text for t in note_terms):
+            return "notes"
+        if any(t in text for t in vat_terms) or doc_detail in {"vat_overview", "vat_guidance"}:
+            return "vat"
+        if any(t in text for t in pnl_terms) or doc_detail in {"profit_loss"}:
+            return "pnl"
+        if "contract" in text or "overeenkomst" in text:
+            return "contract"
+        return "other"
+
+    def _row_source_label(self, row: Dict[str, Any]) -> str:
+        return f"{row.get('filename', 'Unknown')}, page {row.get('page_number') or 'unknown'}"
+
+    def _collect_source_lines(self, rows: List[Dict[str, Any]], limit: int = 6) -> List[str]:
+        lines: List[str] = []
+        seen = set()
+        for row in rows:
+            key = (row.get("filename"), row.get("page_number"))
+            if key in seen:
+                continue
+            seen.add(key)
+            lines.append(f"- {self._row_source_label(row)}")
+            if len(lines) >= limit:
+                break
+        return lines
+
+    def _scan_workflow_hints(self, intent: str, rows: List[Dict[str, Any]], limit: int = 8) -> List[Dict[str, str]]:
+        terms = self.WORKFLOW_HINT_TERMS.get(intent, [])
+        if not terms:
+            return []
+        hints: List[Dict[str, str]] = []
+        seen = set()
+        for row in rows:
+            text = self._row_text(row)
+            source = self._row_source_label(row)
+            for term in terms:
+                term_l = term.lower()
+                if term_l in text:
+                    key = (term_l, source)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    hints.append({"term": term_l, "source": source})
+                    if len(hints) >= limit:
+                        return hints
+        return hints
+
+    def _split_client_reference_rows(self, rows: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        client_rows: List[Dict[str, Any]] = []
+        reference_rows: List[Dict[str, Any]] = []
+        for row in rows:
+            corpus = str(row.get("corpus_type", "")).lower()
+            category = str(row.get("category", "")).lower()
+            text = self._row_text(row)
+            if corpus == "uploaded":
+                client_rows.append(row)
+                continue
+            if corpus == "existing":
+                reference_rows.append(row)
+                continue
+            if category in {"tax_law", "regulation"} or any(t in text for t in ["referentie", "checklist", "guidance", "belastingdienst"]):
+                reference_rows.append(row)
+            else:
+                client_rows.append(row)
+        return client_rows, reference_rows
+
+    def _extract_numbers(self, text: str) -> List[float]:
+        values: List[float] = []
+        for token in re.findall(r"(?:€|\$)?\s*\(?\d[\d\.,]*\)?", text or ""):
+            val = self._parse_numeric_token(token)
+            if val is None:
+                continue
+            values.append(val)
+        return values
+
+    def _row_primary_text(self, row: Dict[str, Any]) -> str:
+        content = str(row.get("content", "") or "").strip()
+        if content:
+            return content
+        summary = str(row.get("summary", "") or "").strip()
+        if summary:
+            return summary
+        return str(row.get("snippet", "") or "")
+
+    def _extract_named_values(self, rows: List[Dict[str, Any]], label_terms: List[str], max_hits: int = 6) -> List[Dict[str, Any]]:
+        hits: List[Dict[str, Any]] = []
+        seen = set()
+        pattern = r"(?:€|\$)?\s*\(?\d[\d\.,]*\)?"
+        for row in rows:
+            raw = self._row_primary_text(row)
+            line_candidates = re.split(r"[\n\r]|(?<=[\.;])\s+", raw)
+            for line in line_candidates:
+                line_l = line.lower()
+                if not any(term in line_l for term in label_terms):
+                    continue
+                numbers = re.findall(pattern, line)
+                if not numbers:
+                    continue
+                for num_txt in numbers[:2]:
+                    value = self._parse_numeric_token(num_txt)
+                    if value is None:
+                        continue
+                    if 1900 <= value <= 2100 and len(numbers) > 1:
+                        # Skip year-like tokens when a line also contains real numeric amounts.
+                        continue
+                    key = (self._row_source_label(row), tuple(sorted(label_terms)), f"{value:.6f}")
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    hits.append(
+                        {
+                            "value": value,
+                            "value_text": num_txt.strip(),
+                            "line": re.sub(r"\s+", " ", line).strip()[:220],
+                            "source": row,
+                        }
+                    )
+                    if len(hits) >= max_hits:
+                        return hits
+        return hits
+
+    def _derive_vat_turnover_total(self, rows: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        for row in rows:
+            text = self._row_primary_text(row)
+            quarter_matches = re.findall(r"q[1-4]\s+20\d{2}\s+([0-9\.,]+)", text.lower())
+            values = []
+            for token in quarter_matches:
+                parsed = self._parse_numeric_token(token)
+                if parsed is not None:
+                    values.append(parsed)
+            if len(values) >= 2:
+                total = sum(values)
+                return {
+                    "value": total,
+                    "value_text": f"{total:,.0f}",
+                    "line": "Afgeleid uit kwartaalomzet in btw-overzicht",
+                    "source": row,
+                }
+        return None
+
+    def _contains_missing_signal(self, text: str) -> bool:
+        signals = [
+            "ontbreekt", "ontbrekend", "niet aangeleverd", "onduidelijk", "nog te ontvangen",
+            "geen specificatie", "geen onderbouwing", "niet volledig", "niet gespecificeerd",
+        ]
+        t = (text or "").lower()
+        return any(sig in t for sig in signals)
+
+    def _format_eur(self, value: float) -> str:
+        sign = "-" if value < 0 else ""
+        n = abs(value)
+        s = f"{n:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        if s.endswith(",00"):
+            s = s[:-3]
+        return f"{sign}€{s}"
+
+    def _parse_year_from_question(self, question: Optional[str]) -> Optional[int]:
+        if not question:
+            return None
+        years = re.findall(r"\b(20\d{2})\b", question)
+        return max(int(y) for y in years) if years else None
+
+    def _extract_labelled_value_candidates(
+        self,
+        rows: List[Dict[str, Any]],
+        labels: List[str],
+        reject_labels: Optional[List[str]] = None,
+        max_hits: int = 10,
+    ) -> List[Dict[str, Any]]:
+        candidates: List[Dict[str, Any]] = []
+        seen = set()
+        reject_labels = reject_labels or []
+        num_pattern = r"(?:€|\$)?\s*\(?\d[\d\.,]*\)?"
+
+        for row in rows:
+            raw = self._row_primary_text(row)
+            lines = [re.sub(r"\s+", " ", ln).strip() for ln in re.split(r"[\n\r]+", raw) if ln and ln.strip()]
+            if not lines:
+                lines = [re.sub(r"\s+", " ", raw).strip()]
+            for i, line in enumerate(lines):
+                line_l = line.lower()
+                if not any(lbl in line_l for lbl in labels):
+                    continue
+                if any(lbl in line_l for lbl in reject_labels):
+                    continue
+                window_parts = [line]
+                for j in range(1, 4):
+                    if i + j < len(lines):
+                        window_parts.append(lines[i + j])
+                window = " ".join(window_parts)
+                line_years = [int(y) for y in re.findall(r"\b(20\d{2})\b", window)]
+                nums = re.findall(num_pattern, window)
+                parsed_nums: List[Tuple[str, float]] = []
+                for tok in nums:
+                    val = self._parse_numeric_token(tok)
+                    if val is None:
+                        continue
+                    if 1900 <= val <= 2100 and len(nums) > 1:
+                        continue
+                    parsed_nums.append((tok.strip(), val))
+                if not parsed_nums:
+                    continue
+
+                row_year = row.get("tax_year") if isinstance(row.get("tax_year"), int) else None
+                for idx, (tok, val) in enumerate(parsed_nums[:2]):
+                    year = line_years[idx] if idx < len(line_years) else row_year
+                    key = (self._row_source_label(row), tok, year)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    candidates.append(
+                        {
+                            "value": val,
+                            "value_text": tok,
+                            "year": year,
+                            "line": window[:260],
+                            "source": row,
+                        }
+                    )
+                    if len(candidates) >= max_hits:
+                        return candidates
+        return candidates
+
+    def _derive_vat_turnover_from_quarters(
+        self, rows: List[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        for row in rows:
+            text = self._row_primary_text(row)
+            compact = re.sub(r"\s+", " ", text.lower())
+            values_by_year_q: Dict[int, Dict[int, float]] = {}
+            values_text_by_year_q: Dict[int, Dict[int, str]] = {}
+            matches = re.findall(
+                r"\bq([1-4])\b(?:\s*(20\d{2}))?(?:\s+[a-z\-]+){0,3}\s+([0-9][0-9\.,]{1,})",
+                compact,
+            )
+            for q_txt, y_txt, val_txt in matches:
+                val = self._parse_numeric_token(val_txt)
+                if val is None:
+                    continue
+                year = int(y_txt) if y_txt else (row.get("tax_year") if isinstance(row.get("tax_year"), int) else None)
+                if year is None:
+                    continue
+                q_num = int(q_txt)
+                values_by_year_q.setdefault(year, {})[q_num] = val
+                values_text_by_year_q.setdefault(year, {})[q_num] = val_txt
+
+            if not values_by_year_q:
+                continue
+            year = max(values_by_year_q.keys(), key=lambda y: len(values_by_year_q[y]))
+            q_map = values_by_year_q[year]
+            if len(q_map) < 2:
+                continue
+            total = sum(q_map.values())
+            ordered_quarters = [f"Q{q}" for q in sorted(q_map.keys())]
+            return {
+                "value": total,
+                "value_text": f"{int(total)}",
+                "year": year,
+                "line": f"Afgeleid uit kwartaalomzet ({'+'.join(ordered_quarters)} waar beschikbaar).",
+                "source": row,
+                "derived_quarters": [values_text_by_year_q.get(year, {}).get(q, "") for q in sorted(q_map.keys())],
+            }
+        return None
+
+    def _pick_best_candidate_for_year(
+        self, candidates: List[Dict[str, Any]], preferred_year: Optional[int]
+    ) -> Optional[Dict[str, Any]]:
+        if not candidates:
+            return None
+        if preferred_year is not None:
+            same_year = [c for c in candidates if c.get("year") == preferred_year]
+            if same_year:
+                return max(same_year, key=lambda c: c["value"])
+        known_year = [c for c in candidates if c.get("year") is not None]
+        if known_year:
+            return max(known_year, key=lambda c: (c["year"], c["value"]))
+        return max(candidates, key=lambda c: c["value"])
+
+    def _build_inconsistency_answer(self, search_results: List[Dict[str, Any]], question: Optional[str] = None) -> str:
+        pnl_rows = [r for r in search_results if self._detect_row_kind(r) == "pnl"]
+        vat_rows = [r for r in search_results if self._detect_row_kind(r) == "vat"]
+        note_rows = [r for r in search_results if self._detect_row_kind(r) == "notes"]
+
+        # Fallback only when no concept rows were found.
+        if not pnl_rows:
+            pnl_rows = [r for r in search_results if any(t in self._row_text(r) for t in ["winst-en-verlies", "resultatenrekening", "profit and loss", "p&l", "income statement"])]
+        if not vat_rows:
+            vat_rows = [r for r in search_results if any(t in self._row_text(r) for t in ["btw-overzicht", "omzetbelasting", "vat overview", "taxable turnover", "vat turnover"])]
+        if not note_rows:
+            note_rows = [r for r in search_results if any(t in self._row_text(r) for t in ["klantnotities", "notitie", "client notes", "memo"])]
+
+        pnl_values = self._extract_labelled_value_candidates(
+            pnl_rows,
+            ["totale omzet", "netto-omzet", "omzet", "opbrengsten", "total revenue", "revenue", "net sales", "sales"],
+            reject_labels=["btw", "vat", "voorbelasting", "te betalen btw", "vat payable"],
+            max_hits=10,
+        )
+        vat_turnover_values = self._extract_labelled_value_candidates(
+            vat_rows,
+            ["btw-omzet", "belastbare omzet", "omzet hoog tarief", "omzet laag tarief", "omzet per kwartaal", "grondslag", "taxable turnover", "vat turnover", "total vat turnover"],
+            reject_labels=["voorbelasting", "te betalen btw", "vat payable", "input vat", "verschuldigde btw"],
+            max_hits=10,
+        )
+        vat_payable_values = self._extract_labelled_value_candidates(
+            vat_rows,
+            ["verschuldigde btw", "btw omzet", "voorbelasting", "te betalen btw", "vat payable", "input vat"],
+            max_hits=6,
+        )
+        note_signals = self._extract_labelled_value_candidates(
+            note_rows,
+            ["omzet gestegen", "omzet gedaald", "ontbrekende factuur", "correctie", "periodeverschil", "nog niet verwerkt", "contante omzet", "contractomzet", "timingverschil", "omzet"],
+            max_hits=4,
+        )
+
+        requested_year = self._parse_year_from_question(question)
+        derived_vat = self._derive_vat_turnover_from_quarters(vat_rows)
+        if not vat_turnover_values and derived_vat:
+            vat_turnover_values = [derived_vat]
+
+        pnl_pick = self._pick_best_candidate_for_year(pnl_values, requested_year)
+        vat_pick = self._pick_best_candidate_for_year(vat_turnover_values, requested_year)
+
+        # If both picks resolve to the same source while alternative concept rows exist,
+        # prefer a cross-source comparison to reduce accidental within-document mismatches.
+        if pnl_pick and vat_pick:
+            src_a = self._row_source_label(pnl_pick["source"])
+            src_b = self._row_source_label(vat_pick["source"])
+            if src_a == src_b:
+                alt_pnl = [c for c in pnl_values if self._row_source_label(c["source"]) != src_b]
+                alt_vat = [c for c in vat_turnover_values if self._row_source_label(c["source"]) != src_a]
+                if alt_pnl:
+                    pnl_pick = self._pick_best_candidate_for_year(alt_pnl, requested_year) or pnl_pick
+                if alt_vat:
+                    vat_pick = self._pick_best_candidate_for_year(alt_vat, requested_year) or vat_pick
+
+        issues: List[str] = []
+        missing: List[str] = []
+        current_idx = 1
+
+        if pnl_pick and vat_pick:
+            year_a = pnl_pick.get("year")
+            year_b = vat_pick.get("year")
+            if year_a is not None and year_b is not None and year_a != year_b:
+                issues.append(
+                    f"{current_idx}. Waarden lijken uit verschillende jaren te komen\n"
+                    f"   - Bewijs A: Totale omzet {self._format_eur(pnl_pick['value'])} ({year_a}), bron: {self._row_source_label(pnl_pick['source'])}\n"
+                    f"   - Bewijs B: Btw-omzet {self._format_eur(vat_pick['value'])} ({year_b}), bron: {self._row_source_label(vat_pick['source'])}\n"
+                    "   - Waarom dit mogelijk inconsistent is: vergelijking tussen verschillende jaren is niet direct valide."
+                )
+            else:
+                diff = pnl_pick["value"] - vat_pick["value"]
+                label_b = "Btw-omzet / belastbare omzet volgens btw-overzicht"
+                if vat_pick is derived_vat:
+                    label_b = "Btw-omzet totaal (afgeleid: Q1+Q2+Q3+Q4)"
+                issues.append(
+                    f"{current_idx}. Omzet volgens winst-en-verliesrekening sluit mogelijk niet aan op btw-overzicht\n"
+                    f"   - Bewijs A: Totale omzet volgens winst-en-verliesrekening: {self._format_eur(pnl_pick['value'])}, bron: {self._row_source_label(pnl_pick['source'])}\n"
+                    f"   - Bewijs B: {label_b}: {self._format_eur(vat_pick['value'])}, bron: {self._row_source_label(vat_pick['source'])}\n"
+                    f"   - Verschil: {self._format_eur(pnl_pick['value'])} - {self._format_eur(vat_pick['value'])} = {self._format_eur(diff)}\n"
+                    "   - Waarom dit mogelijk inconsistent is: omzet en btw-grondslag sluiten niet direct op elkaar aan. Dit kan verklaarbaar zijn door vrijgestelde omzet, timingverschillen, correcties of ontbrekende facturen, maar moet handmatig worden gecontroleerd."
+                )
+            current_idx += 1
+        else:
+            if not pnl_pick:
+                missing.append("- Totale omzet uit winst-en-verliesrekening niet gevonden.")
+            if not vat_pick:
+                missing.append("- Btw-omzet uit btw-overzicht niet gevonden.")
+                if vat_payable_values:
+                    missing.append("- Alleen btw-bedragen zoals te betalen btw/voorbelasting gevonden; deze zijn niet gebruikt als omzetvergelijking.")
+
+        if note_signals:
+            first = note_signals[0]
+            issues.append(
+                f"{current_idx}. Klantnotities bevatten een mogelijk verklarend signaal\n"
+                f"   - Bewijs A: {first['line']}, bron: {self._row_source_label(first['source'])}\n"
+                "   - Bewijs B: Controleer of dit signaal terugkomt in winst-en-verliesrekening en btw-overzicht\n"
+                "   - Waarom dit mogelijk inconsistent is: notities wijzen op mogelijke correcties of timingverschillen."
+            )
+            current_idx += 1
+        elif note_rows:
+            missing.append("- Klantnotities bevatten geen concrete verklaring voor het verschil.")
+
+        lines = [
+            "Kort antwoord:",
+            "Mogelijke inconsistenties voor handmatige controle.",
+            "",
+            "Mogelijke inconsistenties:",
+        ]
+        if issues:
+            lines.append("\n".join(issues))
+        else:
+            lines.append("1. Geen harde inconsistentie vastgesteld op basis van de gevonden waarden.")
+
+        if not issues:
+            lines.extend([
+                "",
+                "Geen duidelijke inconsistentie gevonden:",
+                "- Controle blijft nodig: niet alle benodigde vergelijkingswaarden zijn gevonden.",
+            ])
+
+        if missing:
+            lines.extend([""] + missing)
+
+        lines.extend([
+            "",
+            "Volgende stap:",
+            "Vergelijk de verschillen met onderliggende facturen, btw-aangiften, contracten of correctieboekingen per dezelfde periode.",
+            "",
+            "Bronnen:",
+            *self._collect_source_lines(search_results),
+        ])
+        return "\n".join(lines).strip()
+
+    def _build_inconsistency_answer_verified(self, search_results: List[Dict[str, Any]]) -> str:
+        return self._build_inconsistency_answer(search_results, question=None)
+    def _build_advisory_points_answer(self, search_results: List[Dict[str, Any]]) -> str:
+        hints = self._scan_workflow_hints("advisory_points", search_results, limit=12)
+        theme_candidates: List[Tuple[str, str, str]] = []
+        if any(h["term"] in {"omzet", "marge", "groei", "daling"} for h in hints):
+            theme_candidates.append(
+                ("Omzet- en margeontwikkeling", "Inzicht in omzet en marge helpt om winstgevendheid te sturen.", "Welke oorzaken liggen achter recente omzet- of margeschommelingen?")
+            )
+        if any(h["term"] in {"btw", "facturen", "omzet"} for h in hints):
+            theme_candidates.append(
+                ("BTW-aansluiting en factuuronderbouwing", "Afstemming tussen btw-overzicht en administratie verlaagt controlerisico.", "Zijn alle btw-relevante facturen en correcties volledig verwerkt?")
+            )
+        if any(h["term"] in {"liquiditeit", "kosten", "voorraad", "contract", "verzekering", "ontbreekt"} for h in hints):
+            theme_candidates.append(
+                ("Documentatie en risicobeheersing", "Ontbrekende stukken of onduidelijke afspraken vergroten operationeel en financieel risico.", "Welke documenten of afspraken ontbreken nog voor een volledig dossier?")
+            )
+        if len(theme_candidates) < 3:
+            theme_candidates.extend(
+                [
+                    ("Kostenstructuur en efficiency", "Grip op kosten ondersteunt stabiele marges.", "Welke kostenposten zijn het sterkst gestegen en waarom?"),
+                    ("Liquiditeit en verplichtingen", "Vooruitkijken op kasstromen voorkomt knelpunten.", "Welke verplichtingen drukken de komende maanden het meest op de liquiditeit?"),
+                    ("Contract- en afhankelijkheidsrisico", "Contractvoorwaarden en afhankelijkheden bepalen risico en onderhandelingsruimte.", "Waar zitten de grootste contractuele risico’s of afhankelijkheden?"),
+                ]
+            )
+        points = theme_candidates[:3]
+        src_lines = self._collect_source_lines(search_results)
+        src1 = src_lines[0][2:] if len(src_lines) > 0 else "bron onbekend"
+        src2 = src_lines[1][2:] if len(src_lines) > 1 else src1
+        src3 = src_lines[2][2:] if len(src_lines) > 2 else src2
+        sources_per_point = [src1, src2, src3]
+
+        lines = [
+            "Kort antwoord:",
+            "Hier zijn drie adviespunten om met de klant te bespreken.",
+            "",
+            "Adviespunten om met de klant te bespreken:",
+        ]
+        for idx, (title, why, question) in enumerate(points, start=1):
+            lines.append(f"{idx}. {title}")
+            lines.append("   - Waarom dit belangrijk is:")
+            lines.append(f"   {why}")
+            lines.append("   - Bewijs/bron:")
+            lines.append(f"   {sources_per_point[idx - 1]}")
+            lines.append("   - Vraag aan de klant:")
+            lines.append(f"   {question}")
+            lines.append("")
+        lines.append("Belangrijke opmerking:")
+        lines.append("Dit zijn voorbereidingspunten, geen definitief advies.")
+        lines.append("")
+        lines.append("Bronnen:")
+        lines.extend(src_lines)
+        return "\n".join(lines).strip()
+
+    def _build_insurance_risk_answer(self, search_results: List[Dict[str, Any]]) -> str:
+        hints = self._scan_workflow_hints("insurance_risk_check", search_results, limit=12)
+        risk_items: List[Tuple[str, str, str]] = []
+
+        asset_values = self._extract_named_values(search_results, ["voorraad", "inventaris", "activa", "bedrijfsmiddelen"], max_hits=2)
+        insured_values = self._extract_named_values(search_results, ["verzekerde som", "dekking", "polis", "insurance coverage"], max_hits=2)
+        if asset_values and insured_values:
+            asset = asset_values[0]
+            ins = insured_values[0]
+            if ins["value"] < asset["value"]:
+                diff = asset["value"] - ins["value"]
+                risk_items.append(
+                    (
+                        "Mogelijke onderverzekering van activa/voorraad",
+                        f"Voorraadwaarde {asset['value_text']} in {self._row_source_label(asset['source'])}; verzekerde dekking {ins['value_text']} in {self._row_source_label(ins['source'])}. Verschil: {diff:,.2f}.",
+                        "Controleer of verzekerde som en actuele waarde op elkaar aansluiten.",
+                    )
+                )
+
+        if any(h["term"] in {"contract", "aansprakelijkheid", "productaansprakelijkheid", "beroepsaansprakelijkheid"} for h in hints):
+            src = next((h["source"] for h in hints if h["term"] in {"contract", "aansprakelijkheid", "productaansprakelijkheid", "beroepsaansprakelijkheid"}), self._row_source_label(search_results[0]))
+            risk_items.append(("Aansprakelijkheidsrisico vanuit contracten", src, "Controleer aansprakelijkheidsdekking, limieten en uitsluitingen."))
+        if any(h["term"] in {"cyber", "klantdata"} for h in hints):
+            src = next((h["source"] for h in hints if h["term"] in {"cyber", "klantdata"}), self._row_source_label(search_results[0]))
+            risk_items.append(("Cyber- en datarisico", src, "Controleer cyberdekking, datalekrespons en eigen risico."))
+        if any(h["term"] in {"transport"} for h in hints):
+            src = next((h["source"] for h in hints if h["term"] == "transport"), self._row_source_label(search_results[0]))
+            risk_items.append(("Transport- en leveringsrisico", src, "Controleer transportdekking en aansprakelijkheid tijdens vervoer."))
+
+        dedup: List[Tuple[str, str, str]] = []
+        seen = set()
+        for item in risk_items:
+            if item[0] in seen:
+                continue
+            seen.add(item[0])
+            dedup.append(item)
+        if not dedup:
+            dedup.append(("Beperkte risicodekking zichtbaar in huidige context", self._row_source_label(search_results[0]), "Vraag polisvoorwaarden, limieten en uitsluitingen op."))
+
+        lines = [
+            "Kort antwoord:",
+            "Dit zijn mogelijke verzekeringsrisico’s op basis van de beschikbare documenten.",
+            "",
+            "Mogelijke verzekeringsrisico’s:",
+        ]
+        for idx, (name, evidence, check) in enumerate(dedup[:3], start=1):
+            lines.append(f"{idx}. {name}")
+            lines.append("   - Bewijs:")
+            lines.append(f"   {evidence}")
+            lines.append("   - Waarom dit belangrijk is:")
+            lines.append("   Onvoldoende of onduidelijke dekking kan leiden tot onverwachte financiële schade.")
+            lines.append("   - Wat te controleren:")
+            lines.append(f"   {check}")
+            lines.append("")
+        lines.append("Ontbrekende informatie:")
+        lines.append("- Polisvoorwaarden met limieten en uitsluitingen")
+        lines.append("- Actuele waardering van activa/voorraad per peildatum")
+        lines.append("")
+        lines.append("Bronnen:")
+        lines.extend(self._collect_source_lines(search_results))
+        return "\n".join(lines).strip()
+
+    def _build_client_file_summary_answer(self, search_results: List[Dict[str, Any]]) -> str:
+        text_blob = " ".join(self._row_text(r) for r in search_results[:6])
+        hints = self._scan_workflow_hints("advisory_points", search_results, limit=8)
+        business = "MKB-dossier met operationele en financiële bronstukken." if text_blob else "Onvoldoende context in opgehaalde bronnen."
+        if "software" in text_blob or "it" in text_blob:
+            business = "Bedrijfsactiviteiten lijken deels software/IT-gerelateerd."
+        elif "voorraad" in text_blob or "inventory" in text_blob:
+            business = "Bedrijfsactiviteiten bevatten waarschijnlijk voorraad- of handelscomponenten."
+
+        financial_points = []
+        if any(t in text_blob for t in ["omzet", "revenue"]):
+            financial_points.append("- Omzetinformatie is aanwezig in de opgehaalde context.")
+        if any(t in text_blob for t in ["kosten", "expenses"]):
+            financial_points.append("- Kosteninformatie is aanwezig, controle op onderbouwing blijft nodig.")
+        if any(t in text_blob for t in ["cash", "bank", "liquiditeit"]):
+            financial_points.append("- Liquiditeitssignalen zijn zichtbaar in bank/cash-gerelateerde informatie.")
+        if not financial_points:
+            financial_points.append("- Beperkte financiële detailinformatie in de huidige retrievalset.")
+
+        tax_points = []
+        if any(t in text_blob for t in ["btw", "vat", "omzetbelasting"]):
+            tax_points.append("- BTW/VAT informatie is aanwezig en bruikbaar voor aansluiting.")
+        if any(t in text_blob for t in ["tax", "belasting"]):
+            tax_points.append("- Fiscale context is aanwezig, maar detailniveau verschilt per document.")
+        if not tax_points:
+            tax_points.append("- Geen duidelijke fiscale details in de huidige topresultaten.")
+
+        risks = []
+        if any(t in text_blob for t in ["contract", "agreement"]):
+            risks.append("- Contractverplichtingen kunnen impact hebben op omzetmoment en risico.")
+        if any(t in text_blob for t in ["verzekering", "polis", "insurance"]):
+            risks.append("- Verzekeringsdekking moet worden vergeleken met activiteiten en activa.")
+        if not risks:
+            risks.append("- Aanvullende bronstukken nodig om operationele risico’s beter te beoordelen.")
+
+        missing = [
+            "- Volledige bronset voor facturen/bankafschriften per periode",
+            "- Expliciete aansluiting tussen jaarrekeningposten en btw-overzicht",
+        ]
+        if any(h["term"] == "ontbreekt" for h in hints):
+            missing.append("- In de opgehaalde context staat expliciet dat informatie ontbreekt; verifieer welke stukken nog ontbreken.")
+
+        follow_up = [
+            "- Welke posten verschillen tussen interne notities en financiële overzichten?",
+            "- Zijn alle contracten en polisvoorwaarden actueel opgenomen in het dossier?",
+        ]
+
+        return (
+            "Samenvatting klantdossier:\n\n"
+            "Bedrijfsactiviteit:\n"
+            f"{business}\n\n"
+            "Financiële punten:\n"
+            + "\n".join(financial_points)
+            + "\n\nBelasting-/btw-punten:\n"
+            + "\n".join(tax_points)
+            + "\n\nRisico’s of aandachtspunten:\n"
+            + "\n".join(risks)
+            + "\n\nOntbrekende informatie:\n"
+            + "\n".join(missing)
+            + "\n\nVervolgvragen:\n"
+            + "\n".join(follow_up)
+            + "\n\nBronnen:\n"
+            + "\n".join(self._collect_source_lines(search_results))
+        ).strip()
+
     def _is_calc_intent_fast(self, question: str) -> bool:
         q = (question or "").lower()
         if not q:
@@ -619,6 +1742,7 @@ class LlamaService:
             "calculate", "ratio", "margin", "growth", "cogs", "cost of revenue",
             "roe", "roa", "eps", "free cash flow", "debt to equity", "current ratio",
             "operating income", "net income", "gross profit", "ebitda",
+            "bereken", "berekenen", "omzetgroei", "marge", "verhouding", "groei",
         ]
         return any(term in q for term in calc_terms)
 
@@ -1139,6 +2263,7 @@ class LlamaService:
                 "title": row.get("title", row.get("filename", "Unknown")),
                 "score": row.get("score", 0.0),
                 "category": row.get("category", "other"),
+                "document_type_detail": (row.get("metadata") or {}).get("document_type_detail"),
                 "page": row.get("page_number") or row.get("chunk_index"),
                 "snippet": (row.get("snippet") or row.get("summary") or "")[:350],
                 "jurisdiction": row.get("jurisdiction"),
@@ -1201,11 +2326,29 @@ class LlamaService:
     def _parse_numeric_token(self, token: str) -> Optional[float]:
         if not token:
             return None
-        t = token.strip().replace("$", "").replace(",", "")
+        t = token.strip().replace("$", "").replace("€", "").replace(" ", "")
         negative = False
         if t.startswith("(") and t.endswith(")"):
             negative = True
             t = t[1:-1]
+        # Handle Dutch and US separators:
+        # - 372.000 => 372000
+        # - 372,000 => 372000
+        # - 18,5 => 18.5
+        # - 18.5 => 18.5
+        if "." in t and "," in t:
+            if t.rfind(",") > t.rfind("."):
+                t = t.replace(".", "").replace(",", ".")
+            else:
+                t = t.replace(",", "")
+        elif "," in t:
+            if re.fullmatch(r"-?\d{1,3}(?:,\d{3})+", t):
+                t = t.replace(",", "")
+            else:
+                t = t.replace(",", ".")
+        elif "." in t:
+            if re.fullmatch(r"-?\d{1,3}(?:\.\d{3})+", t):
+                t = t.replace(".", "")
         try:
             value = float(t)
             return -value if negative else value
@@ -1237,6 +2380,7 @@ class LlamaService:
                 "title": item.get("title", item.get("filename", "Unknown")),
                 "score": item.get("score", 0.0),
                 "category": item.get("category", "other"),
+                "document_type_detail": (item.get("metadata") or {}).get("document_type_detail"),
                 "page": item.get("page_number") or item.get("chunk_index"),
                 "snippet": (item.get("snippet") or item.get("summary") or "")[:350],
                 "jurisdiction": item.get("jurisdiction"),
@@ -1346,8 +2490,9 @@ class LlamaService:
         self,
         question: str,
         search_results: List[Dict[str, Any]],
+        intent: str = "normal_qna",
     ) -> Tuple[List[Dict[str, Any]], Optional[str], List[str]]:
-        constraints = self._extract_question_constraints(question)
+        constraints = self._extract_question_constraints(question, intent=intent)
         if not constraints:
             return search_results, None, []
 
@@ -1362,6 +2507,9 @@ class LlamaService:
 
         rescored.sort(key=lambda x: x[0], reverse=True)
         sorted_results = [x[1] for x in rescored]
+
+        if not any_match and intent in self.WORKFLOW_INTENTS:
+            return sorted_results, None, ["Source consistency relaxed for advisor workflow intent."]
 
         if not any_match:
             expected = []
@@ -1397,7 +2545,7 @@ class LlamaService:
 
         return sorted_results, None, notes
 
-    def _extract_question_constraints(self, question: str) -> Dict[str, List[str]]:
+    def _extract_question_constraints(self, question: str, intent: str = "normal_qna") -> Dict[str, List[str]]:
         constraints: Dict[str, List[str]] = {}
         q = question or ""
         q_lower = q.lower()
@@ -1406,8 +2554,12 @@ class LlamaService:
         if years:
             constraints["years"] = years
 
-        tickers = sorted(set(re.findall(r"\b[A-Z]{2,5}\b", q)))
-        tickers = [t for t in tickers if t not in {"VAT", "IFRS", "GAAP"}]
+        tickers: List[str] = []
+        if intent in self.WORKFLOW_INTENTS:
+            tickers = sorted(set(re.findall(r"\$([A-Z]{1,5})\b", q)))
+        else:
+            tickers = sorted(set(re.findall(r"\b[A-Z]{2,5}\b", q)))
+        tickers = [t for t in tickers if t not in self.TICKER_STOPWORDS]
         if tickers:
             constraints["tickers"] = tickers
 
@@ -1551,3 +2703,4 @@ def get_llama_service(model: str = settings.ollama_model) -> LlamaService:
     ):
         _llama_service = LlamaService(model=effective_model)
     return _llama_service
+

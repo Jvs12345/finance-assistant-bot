@@ -8,12 +8,14 @@ I first built a Be Informed documentation chatbot. I reused the same local RAG s
 
 ## What it can do
 - Index PDFs from `Source_files/` in batch mode.
+- Index reference PDFs from `Existing_files/` for baseline material.
 - Upload PDFs through the API and index them in the same Elasticsearch index.
 - Ask questions through the web UI and API.
 - Filter retrieval by document type, jurisdiction, and tax year.
 - Show source snippets and open source PDFs from the answer.
 - Run local calculations when the answer includes a calculation payload.
 - Run formula-driven calculations from natural language using the local formula registry.
+- Handle advisor workflows from natural-language prompts (missing info checks, inconsistency checks, advisory points, insurance risk scan, client dossier summary).
 
 ## How it works
 1. PDF text is extracted and split into chunks.
@@ -114,19 +116,19 @@ Then ask questions at:
 ## Document folders
 `Source_files/`
 - Main local folder for PDFs
-- Examples: annual reports, tax documents, invoices, client files
+- Examples: winst-en-verliesrekening, balans, btw-overzicht, klantnotities, contracten, polisoverzicht
 
-`Existing_files/` (optional)
-- Kept for compatibility with earlier indexing scripts
-- Not required for normal Q&A
+`Existing_files/`
+- Reference or baseline documents
+- Examples: tax law, VAT guidance, accounting guidance, jaarrekening checklist, insurance risk checklist
 
 ## Example questions
-- Which expenses in these files look deductible?
-- What tax obligations are mentioned for this client?
-- Where do these documents mention VAT rules?
-- What information is still missing before drafting a tax position?
-- Do these files contain inconsistent numbers?
-- Explain this tax rule in simple language and quote the source.
+- Welke informatie ontbreekt nog voordat de jaarrekening kan worden opgesteld?
+- Controleer of er inconsistenties zijn tussen de winst-en-verliesrekening, btw-overzicht en klantnotities.
+- Welke drie adviespunten kan ik met deze MKB-klant bespreken op basis van de documenten?
+- Welke verzekeringsrisico’s zie je op basis van de bedrijfsactiviteiten, activa en contractinformatie?
+- Vat de belangrijkste punten uit dit klantdossier samen.
+- Bereken de omzetgroei als de benodigde cijfers beschikbaar zijn.
 
 ## Limitations
 - This is a proof of concept.
@@ -139,6 +141,11 @@ Then ask questions at:
 
 ## Disclaimer
 This tool helps with document analysis. Check important tax and accounting decisions with a qualified professional.
+
+## Local-first note
+- The default setup is local: Elasticsearch + Ollama run on your own machine.
+- Client data stays in your local documents unless you explicitly change the setup.
+- This project is a proof of concept and not a replacement for certified advisory work.
 
 ## Project structure
 ```text
