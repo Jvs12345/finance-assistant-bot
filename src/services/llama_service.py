@@ -95,6 +95,33 @@ class LlamaService:
         "bank", "factuur", "invoice", "voorraad", "liquiditeit",
     ]
     REFERENCE_DOC_HINTS = ["referentie", "checklist", "belastingdienst", "guidance", "framework"]
+    XAF_HINT_TERMS = [
+        "xaf",
+        "auditfile",
+        "audit file",
+        "xml auditfile",
+        "taxregident",
+        "btw nummer",
+        "vat number",
+        "fiscal year",
+        "boekjaar",
+        "grootboek",
+    ]
+    NUMERIC_HINT_TERMS = [
+        "cijfers",
+        "cijfer",
+        "bedrag",
+        "bedragen",
+        "omzet",
+        "winst",
+        "verlies",
+        "kosten",
+        "btw",
+        "vat",
+        "saldo",
+        "total",
+        "totaal",
+    ]
     MISSING_INFO_CHECK_ITEMS = [
         {
             "key": "bank_support",
@@ -322,6 +349,28 @@ class LlamaService:
                     "warnings": consistency_notes,
                 })
 
+            if self._is_xaf_existence_question(question):
+                return finalize({
+                    "answer": self._build_xaf_existence_answer(search_results),
+                    "sources": self._format_sources(search_results, list(range(min(5, len(search_results))))),
+                    "model": self.model,
+                    "found_documents": True,
+                    "num_documents_used": len(search_results),
+                    "filters_used": filters_used,
+                    "warnings": consistency_notes,
+                })
+
+            if self._is_xaf_amount_listing_question(question):
+                return finalize({
+                    "answer": self._build_xaf_amount_listing_answer(search_results, question),
+                    "sources": self._format_sources(search_results, list(range(min(5, len(search_results))))),
+                    "model": self.model,
+                    "found_documents": True,
+                    "num_documents_used": len(search_results),
+                    "filters_used": filters_used,
+                    "warnings": consistency_notes,
+                })
+
             if detected_intent not in self.WORKFLOW_INTENTS and self._is_low_confidence(question, search_results):
                 return finalize({
                     "answer": self._low_confidence_response(),
@@ -508,6 +557,26 @@ class LlamaService:
         document_type: Optional[str],
         corpus_type: Optional[str],
     ) -> List[Dict[str, Any]]:
+        xaf_focus = self._is_xaf_focused_question(question)
+        if xaf_focus:
+            xaf_rows = self.es_client.search(
+                query=question,
+                limit=max(retrieval_limit, 8),
+                enable_fuzzy=True,
+                system_context=system_context,
+                jurisdiction=jurisdiction,
+                tax_year=tax_year,
+                entity_type=entity_type,
+                client_name=client_name,
+                document_type=document_type,
+                corpus_type=corpus_type,
+                file_type="xaf",
+                use_vector=False,
+            )
+            if xaf_rows:
+                xaf_only = self._deduplicate_results(xaf_rows, limit=None)
+                return self._prioritize_xaf_results_for_question(xaf_only, question)[:retrieval_limit]
+
         if detected_intent not in self.WORKFLOW_INTENTS:
             rows = self.es_client.search(
                 query=question,
@@ -564,9 +633,232 @@ class LlamaService:
             use_vector=True,
         )
 
-        merged = self._deduplicate_results(uploaded_rows + base_rows + existing_rows, limit=None)
+        merged_inputs = uploaded_rows + base_rows + existing_rows
+        merged = self._deduplicate_results(merged_inputs, limit=None)
         prioritized = self._prioritize_advisor_results(merged)
         return prioritized[:retrieval_limit]
+
+    def _is_xaf_focused_question(self, question: str) -> bool:
+        q = (question or "").lower()
+        return any(term in q for term in self.XAF_HINT_TERMS)
+
+    def _is_xaf_existence_question(self, question: str) -> bool:
+        q = (question or "").lower()
+        return any(
+            token in q
+            for token in [
+                "is er een xaf",
+                "bestaat er een xaf",
+                "hebben we een xaf",
+                "xaf bestand",
+                "xaf-bestand",
+                "welke xaf",
+            ]
+        )
+
+    def _is_xaf_amount_listing_question(self, question: str) -> bool:
+        q = (question or "").lower()
+        asks_list = any(token in q for token in ["noem", "geef", "toon", "list", "show"])
+        asks_amounts = any(
+            token in q
+            for token in [
+                "bedrag",
+                "bedragen",
+                "amnt",
+                "vatamnt",
+                "vatperc",
+                "btw",
+                "cijfers",
+                "waarden",
+            ]
+        )
+        return asks_list and asks_amounts and self._is_xaf_focused_question(question)
+
+    def _prioritize_xaf_results(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        rescored: List[Tuple[float, Dict[str, Any]]] = []
+        for row in rows:
+            score = float(row.get("score", 0.0) or 0.0)
+            file_type = str(row.get("file_type", "")).lower()
+            filename = str(row.get("filename", "")).lower()
+            if file_type == "xaf":
+                score += 4.0
+            if "auditfile" in filename or filename.endswith(".xaf"):
+                score += 1.5
+            rescored.append((score, row))
+        rescored.sort(key=lambda x: x[0], reverse=True)
+        return [row for _, row in rescored]
+
+    def _prioritize_xaf_results_for_question(self, rows: List[Dict[str, Any]], question: str) -> List[Dict[str, Any]]:
+        """
+        Prioritize XAF rows, with an additional boost for numeric-heavy chunks
+        when the question asks for figures/amounts.
+        """
+        wants_numbers = self._question_requests_numeric_data(question)
+        rescored: List[Tuple[float, Dict[str, Any]]] = []
+        for row in rows:
+            score = float(row.get("score", 0.0) or 0.0)
+            file_type = str(row.get("file_type", "")).lower()
+            filename = str(row.get("filename", "")).lower()
+            text_blob = " ".join([
+                str(row.get("content", "")),
+                str(row.get("excerpt", "")),
+                str(row.get("snippet", "")),
+            ])
+
+            if file_type == "xaf":
+                score += 4.0
+            if "auditfile" in filename or filename.endswith(".xaf"):
+                score += 1.5
+
+            if wants_numbers:
+                numeric_hits = re.findall(r"(?:€|\$)?\s*\(?\d[\d\.,]*\)?", text_blob)
+                score += min(3.0, len(numeric_hits) * 0.03)
+
+            rescored.append((score, row))
+
+        rescored.sort(key=lambda x: x[0], reverse=True)
+        return [row for _, row in rescored]
+
+    def _question_requests_numeric_data(self, question: str) -> bool:
+        q = (question or "").lower()
+        return any(term in q for term in self.NUMERIC_HINT_TERMS)
+
+    def _build_xaf_existence_answer(self, rows: List[Dict[str, Any]]) -> str:
+        xaf_rows = [r for r in rows if str(r.get("file_type", "")).lower() == "xaf"]
+        if not xaf_rows:
+            return (
+                "1. Direct answer\n"
+                "Ik zie geen XAF-bestanden in de opgehaalde bronnen.\n\n"
+                "2. Evidence from documents\n"
+                "Er is geen bron met bestandstype XAF teruggevonden in deze resultaten.\n\n"
+                "3. Important assumptions or missing information\n"
+                "Dit oordeel is gebaseerd op de huidige zoekresultaten.\n\n"
+                "4. Suggested next step\n"
+                "Controleer of .xaf-bestanden zijn geïndexeerd en vraag daarna opnieuw."
+            )
+
+        filenames = sorted({str(r.get("filename", "Unknown")) for r in xaf_rows})
+        years_from_meta = sorted(
+            {
+                int(r.get("tax_year"))
+                for r in xaf_rows
+                if isinstance(r.get("tax_year"), int) and 1990 <= int(r.get("tax_year")) <= 2099
+            }
+        )
+        years_from_names = []
+        for name in filenames:
+            years_from_names.extend(int(y) for y in re.findall(r"(?<!\d)(19\d{2}|20\d{2})(?!\d)", name))
+        years = sorted(set(years_from_meta + years_from_names))
+        year_text = ", ".join(str(y) for y in years) if years else "onbekend"
+        file_lines = "\n".join(f"- {name}" for name in filenames[:8])
+
+        return (
+            "1. Direct answer\n"
+            "Ja, er zijn XAF-bestanden aanwezig in de opgehaalde bronnen.\n\n"
+            "2. Evidence from documents\n"
+            f"Gevonden XAF-bestanden:\n{file_lines}\n\n"
+            "3. Important assumptions or missing information\n"
+            f"Afgeleide boekjaren uit metadata: {year_text}.\n\n"
+            "4. Suggested next step\n"
+            "Stel een concrete cijfervraag (bijv. btw-bedragen, omzet of saldo), dan haal ik exacte waarden uit deze XAF-bestanden."
+        )
+
+    def _build_xaf_amount_listing_answer(self, rows: List[Dict[str, Any]], question: str) -> str:
+        xaf_rows = [r for r in rows if str(r.get("file_type", "")).lower() == "xaf"]
+        if not xaf_rows:
+            return (
+                "1. Direct answer\n"
+                "Ik kon geen XAF-bronnen vinden om bedragen uit te halen.\n\n"
+                "2. Evidence from documents\n"
+                "Er zijn geen resultaten met bestandstype XAF in de huidige retrievalset.\n\n"
+                "3. Important assumptions or missing information\n"
+                "Deze extractie werkt alleen op opgehaalde XAF-chunks.\n\n"
+                "4. Suggested next step\n"
+                "Stel de vraag opnieuw met 'XAF' en eventueel jaartal (bijv. 2025)."
+            )
+
+        max_items = 10
+        count_match = re.search(r"\b([1-9]|[1-4]\d|50)\b", question or "")
+        if count_match:
+            max_items = max(1, min(50, int(count_match.group(1))))
+
+        requested_labels: List[str] = []
+        q = (question or "").lower()
+        if "amnt" in q:
+            requested_labels.append("amnt")
+        if "vatamnt" in q:
+            requested_labels.append("vatAmnt")
+        if "vatperc" in q:
+            requested_labels.append("vatPerc")
+        if not requested_labels:
+            requested_labels = ["amnt", "vatAmnt", "vatPerc"]
+
+        label_patterns = {
+            "amnt": r"\bamnt\s*:\s*([0-9][0-9\.,]*)\b",
+            "vatAmnt": r"\bvatamnt\s*:\s*([0-9][0-9\.,]*)\b",
+            "vatPerc": r"\bvatperc\s*:\s*([0-9][0-9\.,]*)\b",
+        }
+
+        extracted: List[Dict[str, Any]] = []
+        seen = set()
+        for row in xaf_rows:
+            text = str(row.get("content") or row.get("snippet") or "")
+            if not text:
+                continue
+            compact = re.sub(r"\s+", " ", text)
+            source_label = self._row_source_label(row)
+            for label in requested_labels:
+                pattern = label_patterns.get(label)
+                if not pattern:
+                    continue
+                for match in re.finditer(pattern, compact, flags=re.IGNORECASE):
+                    value = match.group(1).strip()
+                    key = (label.lower(), value, source_label)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    extracted.append(
+                        {
+                            "label": label,
+                            "value": value,
+                            "source": source_label,
+                        }
+                    )
+                    if len(extracted) >= max_items:
+                        break
+                if len(extracted) >= max_items:
+                    break
+            if len(extracted) >= max_items:
+                break
+
+        if not extracted:
+            labels_text = ", ".join(requested_labels)
+            return (
+                "1. Direct answer\n"
+                f"Ik kon geen waarden vinden voor: {labels_text} in de opgehaalde XAF-chunks.\n\n"
+                "2. Evidence from documents\n"
+                "De huidige chunks bevatten geen herkenbare velden in het formaat '<veld>: <waarde>' voor de gevraagde labels.\n\n"
+                "3. Important assumptions or missing information\n"
+                "Deze extractie zoekt specifiek op veldnamen zoals amnt, vatAmnt en vatPerc.\n\n"
+                "4. Suggested next step\n"
+                "Vraag opnieuw met expliciete labels en eventueel jaartal/chunk-context."
+            )
+
+        lines = []
+        for idx, item in enumerate(extracted, 1):
+            lines.append(f"{idx}. {item['label']}: {item['value']} ({item['source']})")
+
+        return (
+            "1. Direct answer\n"
+            f"Hier zijn {len(extracted)} bedragen/waarden uit de XAF-bronnen:\n"
+            + "\n".join(lines)
+            + "\n\n2. Evidence from documents\n"
+            "De waarden zijn direct geëxtraheerd uit opgehaalde XAF-chunks op basis van veldnamen.\n\n"
+            "3. Important assumptions or missing information\n"
+            "De lijst is beperkt tot de huidige retrievalset en gevraagde labels.\n\n"
+            "4. Suggested next step\n"
+            "Als je wilt, kan ik deze ook groeperen per factuur, periode of btw-percentage."
+        )
 
     def _prioritize_advisor_results(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         rescored: List[Tuple[float, Dict[str, Any]]] = []
@@ -598,21 +890,28 @@ class LlamaService:
             filename = result.get("filename", "Unknown")
             category = result.get("category", "other")
             page_num = result.get("page_number")
+            chunk_index = result.get("chunk_index")
             section_reference = result.get("section_reference")
             jurisdiction = result.get("jurisdiction")
             tax_year = result.get("tax_year")
             entity_type = result.get("entity_type")
 
+            # Prefer full chunk content so numeric values remain available for answering.
             content = (
-                (result.get("summary") or "").strip()
+                (result.get("content") or "").strip()
+                or (result.get("summary") or "").strip()
                 or (result.get("snippet") or "").strip()
-                or (result.get("content") or "").strip()
             )
             content = self._compress_context_text(content)
             if len(content) > self.max_chars_per_chunk:
                 content = content[: self.max_chars_per_chunk] + "..."
 
-            location = f"page {page_num}" if page_num else "page unknown"
+            if page_num:
+                location = f"page {page_num}"
+            elif chunk_index:
+                location = f"chunk {chunk_index}"
+            else:
+                location = "page/chunk unknown"
             if section_reference:
                 location = f"{location}, section {section_reference}"
 
@@ -1151,13 +1450,23 @@ class LlamaService:
         return "other"
 
     def _row_source_label(self, row: Dict[str, Any]) -> str:
-        return f"{row.get('filename', 'Unknown')}, page {row.get('page_number') or 'unknown'}"
+        filename = row.get("filename", "Unknown")
+        page_number = row.get("page_number")
+        chunk_index = row.get("chunk_index")
+        if page_number:
+            return f"{filename}, page {page_number}"
+        if chunk_index:
+            return f"{filename}, chunk {chunk_index}"
+        return f"{filename}, page/chunk unknown"
 
     def _collect_source_lines(self, rows: List[Dict[str, Any]], limit: int = 6) -> List[str]:
         lines: List[str] = []
         seen = set()
         for row in rows:
-            key = (row.get("filename"), row.get("page_number"))
+            page_number = row.get("page_number")
+            chunk_index = row.get("chunk_index")
+            location_key = page_number if page_number is not None else f"chunk:{chunk_index}"
+            key = (row.get("filename"), location_key)
             if key in seen:
                 continue
             seen.add(key)
@@ -2257,9 +2566,11 @@ class LlamaService:
             if key in seen:
                 continue
             seen.add(key)
+            resolved_tax_year = self._normalized_source_tax_year(row.get("filename"), row.get("tax_year"))
             out.append({
                 "document_id": row.get("document_id"),
                 "filename": row.get("filename"),
+                "view_filename": row.get("view_filename"),
                 "title": row.get("title", row.get("filename", "Unknown")),
                 "score": row.get("score", 0.0),
                 "category": row.get("category", "other"),
@@ -2267,7 +2578,7 @@ class LlamaService:
                 "page": row.get("page_number") or row.get("chunk_index"),
                 "snippet": (row.get("snippet") or row.get("summary") or "")[:350],
                 "jurisdiction": row.get("jurisdiction"),
-                "tax_year": row.get("tax_year"),
+                "tax_year": resolved_tax_year,
                 "entity_type": row.get("entity_type"),
                 "client_name": row.get("client_name"),
                 "section_reference": row.get("section_reference"),
@@ -2302,9 +2613,9 @@ class LlamaService:
         years = []
         for row in pool:
             ty = row.get("tax_year")
-            if isinstance(ty, int):
+            if isinstance(ty, int) and 1990 <= ty <= 2099:
                 years.append(ty)
-            years.extend(int(y) for y in re.findall(r"\b(19\d{2}|20\d{2}|2100)\b", str(row.get("content", ""))[:2000]))
+            years.extend(int(y) for y in re.findall(r"\b(19\d{2}|20\d{2})\b", str(row.get("content", ""))[:2000]))
         return max(years) if years else None
 
     def _detect_unit_multiplier(self, text: str) -> Tuple[float, str]:
@@ -2318,10 +2629,17 @@ class LlamaService:
         return 1.0, "units"
 
     def _extract_year_from_window(self, text: str) -> Optional[int]:
-        years = re.findall(r"\b(19\d{2}|20\d{2}|2100)\b", text or "")
+        years = re.findall(r"\b(19\d{2}|20\d{2})\b", text or "")
         if not years:
             return None
         return max(int(y) for y in years)
+
+    def _normalized_source_tax_year(self, filename: Any, raw_tax_year: Any) -> Optional[int]:
+        if isinstance(raw_tax_year, int) and 1990 <= raw_tax_year <= 2099:
+            return raw_tax_year
+        name = str(filename or "")
+        name_years = [int(y) for y in re.findall(r"(?<!\d)(19\d{2}|20\d{2})(?!\d)", name)]
+        return max(name_years) if name_years else None
 
     def _parse_numeric_token(self, token: str) -> Optional[float]:
         if not token:
@@ -2374,9 +2692,11 @@ class LlamaService:
             if idx >= len(results):
                 continue
             item = results[idx]
+            resolved_tax_year = self._normalized_source_tax_year(item.get("filename"), item.get("tax_year"))
             sources.append({
                 "document_id": item.get("document_id"),
                 "filename": item.get("filename"),
+                "view_filename": item.get("view_filename"),
                 "title": item.get("title", item.get("filename", "Unknown")),
                 "score": item.get("score", 0.0),
                 "category": item.get("category", "other"),
@@ -2384,7 +2704,7 @@ class LlamaService:
                 "page": item.get("page_number") or item.get("chunk_index"),
                 "snippet": (item.get("snippet") or item.get("summary") or "")[:350],
                 "jurisdiction": item.get("jurisdiction"),
-                "tax_year": item.get("tax_year"),
+                "tax_year": resolved_tax_year,
                 "entity_type": item.get("entity_type"),
                 "client_name": item.get("client_name"),
                 "section_reference": item.get("section_reference"),

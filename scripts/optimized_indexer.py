@@ -12,6 +12,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any
 import multiprocessing
 import time
+import subprocess
+import shutil
 
 from elasticsearch import Elasticsearch, helpers
 from src.services.document_indexing_service import DocumentIndexingService
@@ -21,6 +23,132 @@ from src.config import settings
 
 setup_logging(log_level=settings.log_level)
 logger = get_logger(__name__)
+
+
+def _pdf_has_readable_text(file_path: Path, max_pages: int = 5, min_chars: int = 80) -> bool:
+    """Heuristic check whether a PDF already contains extractable text."""
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(str(file_path))
+        sample = []
+        for page in reader.pages[:max_pages]:
+            sample.append((page.extract_text() or "").strip())
+        joined = " ".join(sample).strip()
+        return len(joined) >= min_chars
+    except Exception:
+        return False
+
+
+def _ocr_pdf_to_searchable(
+    input_pdf: Path,
+    output_pdf: Path,
+    language: str = "eng",
+    force_ocr: bool = True,
+    optimize_level: int = 1,
+) -> None:
+    """Run OCRmyPDF to create a searchable PDF."""
+    if not input_pdf.exists():
+        raise FileNotFoundError(f"Input PDF not found: {input_pdf}")
+
+    ocrmypdf_exe = shutil.which("ocrmypdf")
+    if ocrmypdf_exe:
+        command = [
+            ocrmypdf_exe,
+            "--deskew",
+            "--clean",
+            "--optimize",
+            str(optimize_level),
+            "-l",
+            language,
+            str(input_pdf),
+            str(output_pdf),
+        ]
+        if force_ocr:
+            command.insert(1, "--force-ocr")
+        try:
+            subprocess.run(command, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as exc:
+            msg = f"{exc.stdout or ''}\n{exc.stderr or ''}".lower()
+            if language != "eng" and "language data" in msg:
+                command[command.index(language)] = "eng"
+                subprocess.run(command, check=True)
+            else:
+                raise
+        return
+
+    # Fallback: run OCRmyPDF in Docker when local executable is unavailable.
+    docker_exe = shutil.which("docker")
+    if not docker_exe:
+        raise RuntimeError("ocrmypdf executable not found in PATH and Docker is unavailable")
+
+    work_dir = str(input_pdf.parent.resolve())
+    docker_in = f"/work/{input_pdf.name}"
+    docker_out = f"/work/{output_pdf.name}"
+    command = [
+        docker_exe,
+        "run",
+        "--rm",
+        "-v",
+        f"{work_dir}:/work",
+        "jbarlow83/ocrmypdf",
+        "--deskew",
+        "--clean",
+        "--optimize",
+        str(optimize_level),
+        "-l",
+        language,
+        docker_in,
+        docker_out,
+    ]
+    if force_ocr:
+        command.insert(8, "--force-ocr")
+
+    try:
+        subprocess.run(command, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as exc:
+        msg = f"{exc.stdout or ''}\n{exc.stderr or ''}".lower()
+        if language != "eng" and "language data" in msg:
+            command[command.index(language)] = "eng"
+            subprocess.run(command, check=True)
+        else:
+            raise
+
+
+def maybe_make_searchable_pdf(
+    file_path: Path,
+    ocr_pdfs: bool,
+    ocr_language: str,
+    ocr_force: bool,
+) -> Path:
+    """
+    If file is a PDF with little/no extractable text, create a searchable
+    sibling PDF and return that path for indexing. Otherwise return original.
+    """
+    if not ocr_pdfs or file_path.suffix.lower() != ".pdf":
+        return file_path
+
+    # Do not OCR generated derivatives repeatedly.
+    if file_path.stem.lower().endswith("_searchable"):
+        return file_path
+
+    has_text = _pdf_has_readable_text(file_path)
+    if has_text and not ocr_force:
+        return file_path
+
+    output_pdf = file_path.with_name(f"{file_path.stem}_searchable.pdf")
+
+    if output_pdf.exists() and output_pdf.stat().st_mtime >= file_path.stat().st_mtime and not ocr_force:
+        return output_pdf
+
+    _ocr_pdf_to_searchable(
+        input_pdf=file_path,
+        output_pdf=output_pdf,
+        language=ocr_language,
+        force_ocr=True,
+        optimize_level=1,
+    )
+    return output_pdf
 
 
 class OptimizedElasticsearchIndexer:
@@ -210,16 +338,33 @@ def process_document_parallel(
     text_chunk_size: int,
     no_chunks: bool,
     corpus_type: str,
+    ocr_pdfs: bool,
+    ocr_language: str,
+    ocr_force: bool,
 ) -> Dict[str, Any]:
     """Process a single document (parallel-safe)."""
     try:
         print(f"[{index}/{total}] Processing: {file_path.name} ({file_path.stat().st_size / (1024*1024):.1f} MB)")
         start = time.time()
+        working_file = file_path
+
+        if file_path.suffix.lower() == ".pdf" and ocr_pdfs:
+            try:
+                working_file = maybe_make_searchable_pdf(
+                    file_path=file_path,
+                    ocr_pdfs=ocr_pdfs,
+                    ocr_language=ocr_language,
+                    ocr_force=ocr_force,
+                )
+                if working_file != file_path:
+                    print(f"[{index}/{total}] [OCR] Created searchable PDF: {working_file.name}")
+            except Exception as ocr_err:
+                print(f"[{index}/{total}] [WARN] OCR skipped for {file_path.name}: {ocr_err}")
 
         chunk_size = text_chunk_size if not no_chunks else 10_000_000
         indexing_service = DocumentIndexingService(chunk_size=chunk_size, overlap=500)
         prepared = indexing_service.prepare_document(
-            file_path=file_path,
+            file_path=working_file,
             document_id=f"{corpus_type}-file-{file_path.stem}",
             source_filename=file_path.name,
             category="other",
@@ -270,6 +415,15 @@ def main():
                        help='Directory containing existing/reference PDF files (default: Existing_files)')
     parser.add_argument('--append', action='store_true',
                        help='Append to existing index instead of clearing/recreating it')
+    parser.add_argument('--ocr-pdfs', dest='ocr_pdfs', action='store_true',
+                       help='Enable OCR preprocessing for unreadable PDFs before indexing')
+    parser.add_argument('--no-ocr-pdfs', dest='ocr_pdfs', action='store_false',
+                       help='Disable OCR preprocessing for PDFs')
+    parser.set_defaults(ocr_pdfs=True)
+    parser.add_argument('--ocr-language', default='eng',
+                       help='OCR language(s), e.g. eng, nld, or eng+nld')
+    parser.add_argument('--ocr-force', action='store_true',
+                       help='Force OCR even when PDF already has readable text')
     parser.add_argument('--yes', '-y', action='store_true')
     args = parser.parse_args()
 
@@ -284,20 +438,27 @@ def main():
     workers = args.workers or max(2, cpu_count - 1)
     print(f"CPUs: {cpu_count} | Workers: {workers}")
     print(f"Bulk chunk size: {args.chunk_size} | Text chunk size: {args.text_chunk_size}")
+    print(f"OCR PDFs: {'enabled' if args.ocr_pdfs else 'disabled'} | OCR language: {args.ocr_language}")
     print(f"Index mode: {'append' if args.append else 'rebuild'}")
     print()
 
     source_dir = Path(args.source_dir)
     existing_dir = Path(args.existing_dir)
     supported_extensions = [".pdf", ".xlsx", ".xls", ".xaf"]
-    uploaded_files = sorted(
-        f for f in source_dir.iterdir()
-        if f.is_file() and f.suffix.lower() in supported_extensions
-    ) if source_dir.exists() else []
-    existing_files = sorted(
-        f for f in existing_dir.iterdir()
-        if f.is_file() and f.suffix.lower() in supported_extensions
-    ) if existing_dir.exists() else []
+    def is_indexable(path: Path) -> bool:
+        if not path.is_file():
+            return False
+        if path.suffix.lower() not in supported_extensions:
+            return False
+        # Avoid duplicate indexing of OCR derivatives when the original exists.
+        if path.suffix.lower() == ".pdf" and path.stem.lower().endswith("_searchable"):
+            original = path.with_name(path.stem[:-11] + ".pdf")
+            if original.exists():
+                return False
+        return True
+
+    uploaded_files = sorted(f for f in source_dir.iterdir() if is_indexable(f)) if source_dir.exists() else []
+    existing_files = sorted(f for f in existing_dir.iterdir() if is_indexable(f)) if existing_dir.exists() else []
     jobs = (
         [("uploaded", f) for f in uploaded_files]
         + [("existing", f) for f in existing_files]
@@ -349,6 +510,9 @@ def main():
                 args.text_chunk_size,
                 args.no_chunks,
                 corpus_type,
+                args.ocr_pdfs,
+                args.ocr_language,
+                args.ocr_force,
             ): src_file
             for i, (corpus_type, src_file) in enumerate(jobs, 1)
         }

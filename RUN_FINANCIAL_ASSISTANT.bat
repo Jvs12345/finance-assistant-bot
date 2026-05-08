@@ -55,20 +55,14 @@ if %errorlevel% neq 0 (
 )
 echo [OK] Ollama is running.
 
-REM 3. Deploy latest backend/frontend changes (including calculation sandbox)
-echo [INFO] Deploying latest app changes...
+REM 3. Start services without rebuilding/downloading dependencies
+echo [INFO] Starting services (no rebuild)...
 cd /d "%~dp0"
-docker compose -p financial-bot build app
+docker compose -p financial-bot up -d --no-build elasticsearch postgres app
 if errorlevel 1 (
-    echo [ERROR] App build failed.
+    echo [ERROR] Could not start services without build.
     echo.
-    pause
-    exit /b 1
-)
-
-docker compose -p financial-bot up -d --force-recreate app
-if errorlevel 1 (
-    echo [ERROR] App deploy failed.
+    echo Run DOWNLOAD_DEPENDENSIES.bat first, then run this script again.
     echo.
     pause
     exit /b 1

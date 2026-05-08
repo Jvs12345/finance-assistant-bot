@@ -399,8 +399,25 @@
             return `/static/pdf_highlight.html?${params.toString()}`;
         }
 
+        function getFilenameExtension(filename) {
+            const name = String(filename || "").toLowerCase();
+            const lastDot = name.lastIndexOf(".");
+            return lastDot >= 0 ? name.slice(lastDot) : "";
+        }
+
+        function isPdfFilename(filename) {
+            return getFilenameExtension(filename) === ".pdf";
+        }
+
+        function isBatchIndexedSourceDocumentId(docId) {
+            const id = String(docId || "");
+            return id.includes("-file-") || id.startsWith("pdf-") || id.includes("-pdf-");
+        }
+
         function openSourcePdf(event, anchor) {
             if (!LAZY_PDF_HIGHLIGHT) return true;
+            const fileKind = anchor.getAttribute("data-file-kind");
+            if (fileKind !== "pdf") return true;
             const rawPdfUrl = anchor.getAttribute("data-raw-pdf-url");
             if (!rawPdfUrl || rawPdfUrl === "#") return true;
             const source = {
@@ -456,21 +473,25 @@
             }
 
             return sources.map((s) => {
-                const fragment = buildPdfFragment(s);
                 const docId = String(s.document_id || "");
-                const isBatchSourceFile = docId.startsWith("pdf-") || docId.includes("-pdf-");
+                const viewFilename = String(s.view_filename || s.filename || "");
+                const isPdf = isPdfFilename(viewFilename);
+                const isConvertedXafPreview = getFilenameExtension(s.filename) === ".xaf" && isPdf;
+                const fragment = (isPdf && !isConvertedXafPreview) ? buildPdfFragment(s) : "";
+                const isBatchSourceFile = isBatchIndexedSourceDocumentId(docId);
                 const batchFolder = (s.corpus_type === "existing") ? "existing_files" : "source_files";
-                const rawPdfUrl = isBatchSourceFile && s.filename
-                    ? `/${batchFolder}/${encodeURIComponent(s.filename)}${fragment}`
+                const rawPdfUrl = isBatchSourceFile && viewFilename
+                    ? `/${batchFolder}/${encodeURIComponent(viewFilename)}${fragment}`
                     : (s.document_id ? `/api/v1/documents/${s.document_id}/view${fragment}` : "#");
                 const escapedSnippet = escapeHtml(s.snippet || "");
                 const escapedAnswerText = escapeHtml(answerText || "");
                 const contextText = `${s.filename || ""} ${s.title || ""} ${s.snippet || ""}`;
                 const resolvedType = resolveType(s, contextText);
                 const resolvedJurisdiction = resolveJurisdiction(s, contextText);
+                const locationLabel = (isPdf && !isConvertedXafPreview) ? "Page" : "Chunk";
                 const metaParts = [
                     `Score: ${Number(s.score || 0).toFixed(2)}`,
-                    `Page: ${s.page || "N/A"}`
+                    `${locationLabel}: ${s.page || "N/A"}`
                 ];
                 if (resolvedType) metaParts.push(`Type: ${resolvedType}`);
                 if (resolvedJurisdiction) metaParts.push(`Jurisdiction: ${resolvedJurisdiction}`);
@@ -479,6 +500,7 @@
                 return `
                     <a href="${rawPdfUrl}" target="_blank" class="source-item"
                         data-raw-pdf-url="${rawPdfUrl}"
+                        data-file-kind="${(isPdf && !isConvertedXafPreview) ? "pdf" : "file"}"
                         data-snippet="${escapedSnippet}"
                         data-page="${s.page || 1}"
                         data-answer-text="${escapedAnswerText}"
