@@ -2,6 +2,8 @@
 
 import csv
 import uuid
+import io
+import zipfile
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, Any, List
@@ -44,6 +46,7 @@ class MultiFormatProcessor:
             '.pdf': 'pdf',
             '.csv': 'csv',
             '.xml': 'xml',
+            '.xaf': 'xaf',
             '.html': 'html',
             '.htm': 'html',
             '.png': 'image',
@@ -171,25 +174,59 @@ class MultiFormatProcessor:
         try:
             tree = ET.parse(file_path)
             root = tree.getroot()
-
-            text_parts = [f"XML Document: {root.tag}\n\n"]
-
-            # Extract text from all elements
-            for elem in root.iter():
-                if elem.text and elem.text.strip():
-                    tag_name = elem.tag.split('}')[-1]  # Remove namespace
-                    text_parts.append(f"{tag_name}: {elem.text.strip()}\n")
-
-                # Include attributes
-                if elem.attrib:
-                    for key, value in elem.attrib.items():
-                        text_parts.append(f"  @{key}: {value}\n")
-
-            return ''.join(text_parts)
+            return self._render_xml_tree(root, f"XML Document: {root.tag}")
 
         except Exception as e:
             logger.error(f"Error extracting text from XML: {e}")
             return f"Error reading XML: {str(e)}"
+
+    def extract_text_from_xaf(self, file_path: Path) -> str:
+        """
+        Extract text content from XAF (XML Auditfile Financieel).
+
+        Supports plain XML .xaf files and zipped containers with XML members.
+        """
+        try:
+            tree = ET.parse(file_path)
+            root = tree.getroot()
+            return self._render_xml_tree(root, f"XAF Auditfile: {root.tag}")
+        except ET.ParseError:
+            if zipfile.is_zipfile(file_path):
+                try:
+                    with zipfile.ZipFile(file_path, "r") as archive:
+                        xml_members = [
+                            name for name in archive.namelist()
+                            if name.lower().endswith((".xml", ".xaf"))
+                        ]
+                        if not xml_members:
+                            return (
+                                f"XAF archive: {file_path.name}\n"
+                                "No XML members found in archive."
+                            )
+
+                        combined_parts = []
+                        for member_name in xml_members:
+                            try:
+                                xml_bytes = archive.read(member_name)
+                                root = ET.fromstring(xml_bytes)
+                                combined_parts.append(
+                                    self._render_xml_tree(root, f"XAF Member: {member_name}")
+                                )
+                            except Exception as member_err:
+                                combined_parts.append(
+                                    f"XAF Member: {member_name}\n"
+                                    f"Failed to parse member: {member_err}"
+                                )
+                        return "\n\n".join(combined_parts)
+                except Exception as zip_err:
+                    logger.error(f"Error reading zipped XAF {file_path.name}: {zip_err}")
+                    return f"Error reading zipped XAF: {zip_err}"
+
+            logger.error(f"Error parsing XAF XML: {file_path.name}")
+            return f"Error reading XAF: invalid XML in {file_path.name}"
+        except Exception as e:
+            logger.error(f"Error extracting text from XAF: {e}")
+            return f"Error reading XAF: {str(e)}"
 
     def extract_text_from_html(self, file_path: Path) -> str:
         """
@@ -308,7 +345,28 @@ class MultiFormatProcessor:
             str: Extracted text content
         """
         try:
-            # Try to use openpyxl if available
+            suffix = file_path.suffix.lower()
+            if suffix == ".xls":
+                try:
+                    import xlrd
+
+                    book = xlrd.open_workbook(file_path)
+                    text_parts = []
+                    for sheet in book.sheets():
+                        text_parts.append(f"Sheet: {sheet.name}\n")
+                        for row_idx in range(sheet.nrows):
+                            row_values = sheet.row_values(row_idx)
+                            row_text = "\t".join(str(cell) if cell is not None else "" for cell in row_values)
+                            if row_text.strip():
+                                text_parts.append(row_text)
+                        text_parts.append("")
+                    return "\n".join(text_parts)
+                except ImportError:
+                    return (
+                        f"XLS file (text extraction requires xlrd): {file_path.name}\n"
+                        "Install with: pip install xlrd"
+                    )
+
             try:
                 import openpyxl
                 wb = openpyxl.load_workbook(file_path, data_only=True)
@@ -318,7 +376,6 @@ class MultiFormatProcessor:
                     sheet = wb[sheet_name]
                     text_parts.append(f"Sheet: {sheet_name}\n")
 
-                    # Get all rows with data
                     for row in sheet.iter_rows(values_only=True):
                         row_text = '\t'.join(str(cell) if cell is not None else '' for cell in row)
                         if row_text.strip():
@@ -327,11 +384,11 @@ class MultiFormatProcessor:
 
                 return '\n'.join(text_parts)
             except ImportError:
-                logger.warning("openpyxl not installed, using basic XLSX parsing")
+                logger.warning("openpyxl not installed")
                 return f"XLSX file (text extraction requires openpyxl): {file_path.name}\nInstall with: pip install openpyxl"
         except Exception as e:
-            logger.error(f"Error extracting text from XLSX: {e}")
-            return f"Error reading XLSX: {str(e)}"
+            logger.error(f"Error extracting text from Excel: {e}")
+            return f"Error reading Excel: {str(e)}"
 
     def extract_text_from_pptx(self, file_path: Path) -> str:
         """
@@ -387,7 +444,11 @@ class MultiFormatProcessor:
             # Extract text from each page
             for page_num, page in enumerate(reader.pages, 1):
                 try:
-                    page_text = page.extract_text()
+                    page_text = page.extract_text() or ""
+                    if not page_text.strip():
+                        page_text = self._ocr_text_from_pdf_page_images(page, file_path.name, page_num)
+                    if not page_text.strip():
+                        page_text = self._ocr_text_from_pdf_page_render(file_path, page_num)
                     if page_text.strip():
                         text_parts.append(f"--- Page {page_num} ---\n{page_text}\n")
                     # Lightweight page counter for long PDFs
@@ -436,7 +497,11 @@ class MultiFormatProcessor:
                     print(f"    Processing {file_path.name}: Page {page_num}/{total_pages}...")
                 
                 try:
-                    page_text = page.extract_text()
+                    page_text = page.extract_text() or ""
+                    if not page_text.strip():
+                        page_text = self._ocr_text_from_pdf_page_images(page, file_path.name, page_num)
+                    if not page_text.strip():
+                        page_text = self._ocr_text_from_pdf_page_render(file_path, page_num)
                     if page_text and page_text.strip():
                         pages.append({
                             "page": page_num,
@@ -453,6 +518,73 @@ class MultiFormatProcessor:
         except Exception as e:
             logger.error(f"Error extracting pages from PDF: {e}")
             return []
+
+    def _ocr_text_from_pdf_page_images(self, page: Any, source_filename: str, page_num: int) -> str:
+        """
+        OCR fallback for scanned PDF pages by extracting page images.
+        """
+        try:
+            import pytesseract
+            from PIL import Image
+        except Exception:
+            return ""
+
+        texts: List[str] = []
+        try:
+            page_images = list(page.images)
+        except Exception as e:
+            logger.debug(f"No usable page.images for OCR ({source_filename} p{page_num}): {e}")
+            return ""
+
+        for image_obj in page_images:
+            try:
+                if hasattr(image_obj, "image"):
+                    pil_image = image_obj.image
+                else:
+                    pil_image = Image.open(io.BytesIO(image_obj.data))
+
+                ocr_text = pytesseract.image_to_string(pil_image) or ""
+                if ocr_text.strip():
+                    texts.append(ocr_text.strip())
+            except Exception as e:
+                logger.debug(f"OCR failed for image on {source_filename} p{page_num}: {e}")
+
+        if texts:
+            logger.info(
+                f"OCR fallback used for {source_filename} page {page_num}: "
+                f"{sum(len(t) for t in texts)} chars"
+            )
+        return "\n".join(texts)
+
+    def _ocr_text_from_pdf_page_render(self, file_path: Path, page_num: int) -> str:
+        """
+        OCR fallback by rendering PDF page to bitmap using pypdfium2.
+        """
+        try:
+            import pytesseract
+            import pypdfium2 as pdfium
+        except Exception:
+            return ""
+
+        try:
+            pdf = pdfium.PdfDocument(str(file_path))
+            page_index = max(0, page_num - 1)
+            if page_index >= len(pdf):
+                return ""
+
+            page = pdf[page_index]
+            # scale=2 gives readable OCR quality while keeping it fast
+            bitmap = page.render(scale=2)
+            pil_image = bitmap.to_pil()
+            text = (pytesseract.image_to_string(pil_image) or "").strip()
+            if text:
+                logger.info(
+                    f"OCR render fallback used for {file_path.name} page {page_num}: {len(text)} chars"
+                )
+            return text
+        except Exception as e:
+            logger.debug(f"OCR render fallback failed for {file_path.name} p{page_num}: {e}")
+            return ""
 
     def extract_text_from_json(self, file_path: Path) -> str:
         """
@@ -492,6 +624,8 @@ class MultiFormatProcessor:
             return self.extract_text_from_pdf(file_path)
         elif file_type == 'csv':
             return self.extract_text_from_csv(file_path)
+        elif file_type == 'xaf':
+            return self.extract_text_from_xaf(file_path)
         elif file_type == 'xml':
             return self.extract_text_from_xml(file_path)
         elif file_type == 'html':
@@ -550,6 +684,19 @@ class MultiFormatProcessor:
                 return f"Binary file (skipped): {file_path.name}"
         else:
             return f"Unsupported file type: {file_type}"
+
+    def _render_xml_tree(self, root: ET.Element, header: str) -> str:
+        """Convert XML tree into line-based text for indexing."""
+        text_parts = [header, ""]
+        for elem in root.iter():
+            tag_name = elem.tag.split('}')[-1]
+            text_value = (elem.text or "").strip()
+            if text_value:
+                text_parts.append(f"{tag_name}: {text_value}")
+            if elem.attrib:
+                for key, value in elem.attrib.items():
+                    text_parts.append(f"{tag_name}.@{key}: {value}")
+        return "\n".join(text_parts)
 
     def generate_summary(self, content: str, file_name: str) -> str:
         """

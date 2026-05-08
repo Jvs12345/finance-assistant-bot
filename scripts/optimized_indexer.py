@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Optimized PDF indexer with Elasticsearch performance tuning.
+Optimized document indexer with Elasticsearch performance tuning.
 Based on Elasticsearch bulk indexing best practices.
 """
 
@@ -203,28 +203,28 @@ class OptimizedElasticsearchIndexer:
             }
 
 
-def process_pdf_parallel(
-    pdf_path: Path,
+def process_document_parallel(
+    file_path: Path,
     index: int,
     total: int,
     text_chunk_size: int,
     no_chunks: bool,
     corpus_type: str,
-) -> List[Dict[str, Any]]:
-    """Process a single PDF page-by-page (parallel-safe)."""
+) -> Dict[str, Any]:
+    """Process a single document (parallel-safe)."""
     try:
-        print(f"[{index}/{total}] Processing: {pdf_path.name} ({pdf_path.stat().st_size / (1024*1024):.1f} MB)")
+        print(f"[{index}/{total}] Processing: {file_path.name} ({file_path.stat().st_size / (1024*1024):.1f} MB)")
         start = time.time()
 
         chunk_size = text_chunk_size if not no_chunks else 10_000_000
         indexing_service = DocumentIndexingService(chunk_size=chunk_size, overlap=500)
-        prepared = indexing_service.prepare_pdf_document(
-            file_path=pdf_path,
-            document_id=f"{corpus_type}-pdf-{pdf_path.stem}",
-            source_filename=pdf_path.name,
+        prepared = indexing_service.prepare_document(
+            file_path=file_path,
+            document_id=f"{corpus_type}-file-{file_path.stem}",
+            source_filename=file_path.name,
             category="other",
             corpus_type=corpus_type,
-            metadata={"source_name": pdf_path.name},
+            metadata={"source_name": file_path.name},
         )
         elapsed = time.time() - start
 
@@ -232,20 +232,30 @@ def process_pdf_parallel(
             doc["processing_time_seconds"] = elapsed
 
         print(
-            f"[{index}/{total}] [OK] {pdf_path.name} "
+            f"[{index}/{total}] [OK] {file_path.name} "
             f"({prepared['total_pages']} pages, {prepared['total_chunks']} chunks, {elapsed:.1f}s)"
         )
-        return prepared["documents"]
+        return {
+            "success": True,
+            "file": file_path.name,
+            "documents": prepared["documents"],
+            "error": None,
+        }
 
     except Exception as e:
-        print(f"[{index}/{total}] [ERR] Error: {pdf_path.name} - {e}")
-        logger.error(f"Error processing {pdf_path.name}: {e}")
-        return []
+        print(f"[{index}/{total}] [ERR] Error: {file_path.name} - {e}")
+        logger.error(f"Error processing {file_path.name}: {e}")
+        return {
+            "success": False,
+            "file": file_path.name,
+            "documents": [],
+            "error": str(e),
+        }
 
 
 def main():
     """Main optimized indexing function."""
-    parser = argparse.ArgumentParser(description='Optimized PDF reindexing')
+    parser = argparse.ArgumentParser(description='Optimized document reindexing')
     parser.add_argument('--workers', '-w', type=int, default=None)
     parser.add_argument('--chunk-size', type=int, default=500,
                        help='Elasticsearch bulk chunk size (default: 500)')
@@ -253,8 +263,9 @@ def main():
                        help='Text chunk size for large documents (default: 10000)')
     parser.add_argument('--no-chunks', action='store_true',
                        help='Disable text chunking')
-    parser.add_argument('--pdf-dir', default='Source_files',
-                       help='Directory containing PDF files (default: Source_files)')
+    parser.add_argument('--source-dir', default='Source_files',
+                       help='Directory containing source files (default: Source_files)')
+    parser.add_argument('--pdf-dir', dest='source_dir', help=argparse.SUPPRESS)
     parser.add_argument('--existing-dir', default='Existing_files',
                        help='Directory containing existing/reference PDF files (default: Existing_files)')
     parser.add_argument('--append', action='store_true',
@@ -263,7 +274,7 @@ def main():
     args = parser.parse_args()
 
     print("=" * 80)
-    print("  OPTIMIZED PDF REINDEXING")
+    print("  OPTIMIZED DOCUMENT REINDEXING")
     print("  Elasticsearch Performance Tuning Enabled")
     print("=" * 80)
     print()
@@ -276,27 +287,34 @@ def main():
     print(f"Index mode: {'append' if args.append else 'rebuild'}")
     print()
 
-    source_dir = Path(args.pdf_dir)
+    source_dir = Path(args.source_dir)
     existing_dir = Path(args.existing_dir)
-    uploaded_pdf_files = sorted(source_dir.glob("*.pdf"))
-    existing_pdf_files = sorted(existing_dir.glob("*.pdf")) if existing_dir.exists() else []
+    supported_extensions = [".pdf", ".xlsx", ".xls", ".xaf"]
+    uploaded_files = sorted(
+        f for f in source_dir.iterdir()
+        if f.is_file() and f.suffix.lower() in supported_extensions
+    ) if source_dir.exists() else []
+    existing_files = sorted(
+        f for f in existing_dir.iterdir()
+        if f.is_file() and f.suffix.lower() in supported_extensions
+    ) if existing_dir.exists() else []
     jobs = (
-        [("uploaded", pdf) for pdf in uploaded_pdf_files]
-        + [("existing", pdf) for pdf in existing_pdf_files]
+        [("uploaded", f) for f in uploaded_files]
+        + [("existing", f) for f in existing_files]
     )
 
     if not jobs:
-        print("ERROR: No PDF files found in Source_files or Existing_files")
+        print("ERROR: No supported files found in Source_files or Existing_files")
         return 1
 
     total_size = sum(f.stat().st_size for _, f in jobs)
     print(
-        f"Found {len(jobs)} PDFs "
-        f"({len(existing_pdf_files)} existing, {len(uploaded_pdf_files)} uploaded, "
+        f"Found {len(jobs)} files "
+        f"({len(existing_files)} existing, {len(uploaded_files)} uploaded, "
         f"{total_size / (1024**3):.2f} GB)"
     )
-    for i, (corpus_type, pdf) in enumerate(jobs, 1):
-        print(f"  {i}. [{corpus_type}] {pdf.name} ({pdf.stat().st_size / (1024*1024):.1f} MB)")
+    for i, (corpus_type, src_file) in enumerate(jobs, 1):
+        print(f"  {i}. [{corpus_type}] {src_file.name} ({src_file.stat().st_size / (1024*1024):.1f} MB)")
     print()
 
     # Estimate time
@@ -312,34 +330,47 @@ def main():
 
     start_time = datetime.now()
 
-    # STAGE 1: Process PDFs in parallel
+    # STAGE 1: Process files in parallel
     print("-" * 80)
-    print("STAGE 1: Parallel PDF Processing")
+    print("STAGE 1: Parallel Source File Processing")
     print("-" * 80)
     print()
 
     documents = []
+    processed_ok_files: List[str] = []
+    failed_files: List[Dict[str, str]] = []
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
             executor.submit(
-                process_pdf_parallel,
-                pdf,
+                process_document_parallel,
+                src_file,
                 i,
                 len(jobs),
                 args.text_chunk_size,
                 args.no_chunks,
                 corpus_type,
-            ): pdf
-            for i, (corpus_type, pdf) in enumerate(jobs, 1)
+            ): src_file
+            for i, (corpus_type, src_file) in enumerate(jobs, 1)
         }
 
         for future in as_completed(futures):
             result = future.result()
-            if result:
-                documents.extend(result)
+            if result.get("success"):
+                documents.extend(result.get("documents", []))
+                processed_ok_files.append(result.get("file", "unknown"))
+            else:
+                failed_files.append({
+                    "file": result.get("file", "unknown"),
+                    "error": result.get("error", "unknown error"),
+                })
 
     print()
-    print(f"[OK] Processed chunk output from {len(jobs)} files")
+    print(f"[OK] Successfully processed files: {len(processed_ok_files)}/{len(jobs)}")
+    print(f"[INFO] Failed files: {len(failed_files)}")
+    if failed_files:
+        print("[INFO] Failed file details:")
+        for item in failed_files:
+            print(f"  - {item['file']}: {item['error']}")
     print()
 
     if not documents:
@@ -488,6 +519,7 @@ def main():
     print()
     print(f"Total time: {elapsed.total_seconds():.1f}s ({elapsed.total_seconds() / 60:.2f} min)")
     print(f"Files: {len(jobs)} | Documents: {success_count}")
+    print(f"Successful files: {len(processed_ok_files)} | Failed files: {len(failed_files)}")
     if jobs:
         print(f"Avg: {elapsed.total_seconds() / len(jobs):.1f}s per file")
     print()

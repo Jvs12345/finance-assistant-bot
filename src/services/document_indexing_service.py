@@ -13,6 +13,7 @@ from elasticsearch import helpers
 
 from src.services.embedding_service import EmbeddingService, EmbeddingProvider
 from src.services.multi_format_processor import MultiFormatProcessor
+from src.services.xaf_conversion_service import get_xaf_conversion_service
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -20,7 +21,7 @@ logger = get_logger(__name__)
 
 class DocumentIndexingService:
     """
-    Build and index PDF chunks in a format compatible with the main retrieval path.
+    Build and index document chunks in a format compatible with the main retrieval path.
     """
 
     def __init__(self, chunk_size: int = 10000, overlap: int = 500):
@@ -111,6 +112,111 @@ class DocumentIndexingService:
             "document_id": document_id,
             "source_filename": source_filename,
             "total_pages": len(pages),
+            "total_chunks": len(documents),
+            "documents": documents,
+            "metadata": metadata,
+        }
+
+    def prepare_document(
+        self,
+        file_path: Path,
+        document_id: str,
+        source_filename: str,
+        category: str,
+        corpus_type: str = "uploaded",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Prepare any supported document type for Elasticsearch indexing.
+        """
+        detected_type = self.processor.detect_file_type(file_path)
+        if detected_type == "pdf":
+            return self.prepare_pdf_document(
+                file_path=file_path,
+                document_id=document_id,
+                source_filename=source_filename,
+                category=category,
+                corpus_type=corpus_type,
+                metadata=metadata,
+            )
+
+        metadata = metadata or {}
+        resolved_corpus_type = corpus_type if corpus_type in {"existing", "uploaded"} else "uploaded"
+
+        if detected_type == "xaf":
+            converted_path = get_xaf_conversion_service().convert_to_text_file(file_path)
+            metadata["xaf_converted_path"] = str(converted_path)
+            raw_text = converted_path.read_text(encoding="utf-8", errors="ignore")
+        else:
+            raw_text = self.processor.extract_text_from_file(file_path)
+
+        if (
+            not raw_text
+            or not raw_text.strip()
+            or raw_text.startswith("Error reading")
+            or raw_text.startswith("Unsupported file type")
+            or raw_text.startswith("Binary file (skipped)")
+        ):
+            raise ValueError(f"No readable content extracted from {file_path.name}")
+
+        synthetic_pages = [{"content": raw_text}]
+        inferred_tax_year = metadata.get("tax_year") or self._infer_tax_year(source_filename, synthetic_pages)
+        inferred_jurisdiction = metadata.get("jurisdiction") or self._infer_jurisdiction(source_filename, synthetic_pages)
+        resolved_category, detailed_type = self._resolve_document_type(category, source_filename, synthetic_pages, metadata)
+
+        metadata["tax_year"] = inferred_tax_year
+        metadata["jurisdiction"] = inferred_jurisdiction
+        metadata["document_type"] = resolved_category
+        metadata["document_type_detail"] = detailed_type
+        metadata["corpus_type"] = resolved_corpus_type
+
+        upload_date = datetime.utcnow().isoformat()
+        file_size = file_path.stat().st_size
+        chunks = self._chunk_content(raw_text)
+        documents: List[Dict[str, Any]] = []
+
+        for chunk_index, chunk_text in enumerate(chunks, 1):
+            chunk_id = f"{document_id}-c{chunk_index}"
+            merged_metadata = {
+                **metadata,
+                "source_filename": source_filename,
+                "chunk_id": chunk_id,
+            }
+            documents.append(
+                {
+                    "id": chunk_id,
+                    "chunk_id": chunk_id,
+                    "document_id": document_id,
+                    "title": f"{Path(source_filename).stem} - Part {chunk_index}",
+                    "filename": source_filename,
+                    "source_filename": source_filename,
+                    "content": chunk_text,
+                    "excerpt": chunk_text[:500],
+                    "summary": None,
+                    "category": resolved_category,
+                    "file_type": detected_type,
+                    "file_path": str(file_path),
+                    "file_size": file_size,
+                    "page_number": None,
+                    "chunk_index": chunk_index,
+                    "total_chunks": len(chunks),
+                    "upload_date": upload_date,
+                    "indexed_at": datetime.utcnow().isoformat(),
+                    "jurisdiction": metadata.get("jurisdiction"),
+                    "tax_year": metadata.get("tax_year"),
+                    "entity_type": metadata.get("entity_type"),
+                    "client_name": metadata.get("client_name"),
+                    "source_name": metadata.get("source_name") or source_filename,
+                    "section_reference": metadata.get("section_reference"),
+                    "corpus_type": resolved_corpus_type,
+                    "metadata": merged_metadata,
+                }
+            )
+
+        return {
+            "document_id": document_id,
+            "source_filename": source_filename,
+            "total_pages": 1,
             "total_chunks": len(documents),
             "documents": documents,
             "metadata": metadata,
