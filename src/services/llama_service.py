@@ -4,6 +4,7 @@ from typing import Dict, Any, List, Optional, Tuple
 import re
 import json
 from time import perf_counter
+from pathlib import Path
 
 from src.db.elasticsearch_client import get_elasticsearch_client
 from src.services.ollama_client import chat as ollama_chat, list_models as ollama_list_models, OllamaError
@@ -16,7 +17,7 @@ from src.config import settings
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
-SERVICE_VERSION = 5
+SERVICE_VERSION = 6
 
 
 class LlamaService:
@@ -106,6 +107,9 @@ class LlamaService:
         "fiscal year",
         "boekjaar",
         "grootboek",
+        "tax records",
+        "btw records",
+        "vat records",
     ]
     NUMERIC_HINT_TERMS = [
         "cijfers",
@@ -363,6 +367,17 @@ class LlamaService:
             if self._is_xaf_amount_listing_question(question):
                 return finalize({
                     "answer": self._build_xaf_amount_listing_answer(search_results, question),
+                    "sources": self._format_sources(search_results, list(range(min(5, len(search_results))))),
+                    "model": self.model,
+                    "found_documents": True,
+                    "num_documents_used": len(search_results),
+                    "filters_used": filters_used,
+                    "warnings": consistency_notes,
+                })
+
+            if self._is_xaf_tax_record_count_question(question):
+                return finalize({
+                    "answer": self._build_xaf_tax_record_count_answer(search_results, question),
                     "sources": self._format_sources(search_results, list(range(min(5, len(search_results))))),
                     "model": self.model,
                     "found_documents": True,
@@ -640,7 +655,7 @@ class LlamaService:
 
     def _is_xaf_focused_question(self, question: str) -> bool:
         q = (question or "").lower()
-        return any(term in q for term in self.XAF_HINT_TERMS)
+        return any(term in q for term in self.XAF_HINT_TERMS) or self._is_xaf_tax_record_count_question(question)
 
     def _is_xaf_existence_question(self, question: str) -> bool:
         q = (question or "").lower()
@@ -673,6 +688,122 @@ class LlamaService:
             ]
         )
         return asks_list and asks_amounts and self._is_xaf_focused_question(question)
+
+    def _is_xaf_tax_record_count_question(self, question: str) -> bool:
+        q = (question or "").lower()
+        asks_count = any(token in q for token in ["aantal", "hoeveel", "count", "number of"])
+        tax_terms = any(
+            token in q
+            for token in [
+                "tax records",
+                "tax record",
+                "btw records",
+                "btw record",
+                "vat records",
+                "vat record",
+                "belasting records",
+                "taxcode",
+                "vatcode",
+            ]
+        )
+        return asks_count and tax_terms
+
+    def _extract_preferred_xaf_year(self, question: str) -> Optional[int]:
+        years = [int(y) for y in re.findall(r"\b(19\d{2}|20\d{2})\b", question or "")]
+        if not years:
+            return None
+        return max(years)
+
+    def _candidate_xaf_paths(self, rows: List[Dict[str, Any]], preferred_year: Optional[int]) -> List[Path]:
+        filenames = []
+        for row in rows:
+            if str(row.get("file_type", "")).lower() != "xaf":
+                continue
+            name = str(row.get("filename", "")).strip()
+            if name:
+                filenames.append(name)
+
+        unique_names = []
+        seen = set()
+        for name in filenames:
+            if name not in seen:
+                seen.add(name)
+                unique_names.append(name)
+
+        if preferred_year is not None:
+            year_tag = str(preferred_year)
+            preferred = [n for n in unique_names if year_tag in n]
+            if preferred:
+                unique_names = preferred + [n for n in unique_names if n not in preferred]
+
+        roots = [Path("Source_files"), Path("Existing_files"), Path("/app/Source_files"), Path("/app/Existing_files")]
+        candidates: List[Path] = []
+        for name in unique_names:
+            for root in roots:
+                path = root / name
+                if path.exists():
+                    candidates.append(path)
+                    break
+        return candidates
+
+    def _count_xaf_tax_records(self, xaf_path: Path) -> Optional[int]:
+        try:
+            from lxml import etree
+
+            parser = etree.XMLParser(recover=True, huge_tree=True)
+            tree = etree.parse(str(xaf_path), parser)
+            root = tree.getroot()
+            names = {"vat", "vatcode", "taxcode", "tax"}
+            count = 0
+            for element in root.iter():
+                tag = str(element.tag)
+                local_name = tag.split("}", 1)[1] if "}" in tag else tag
+                if local_name.lower() in names:
+                    count += 1
+            return count
+        except Exception:
+            return None
+
+    def _build_xaf_tax_record_count_answer(self, rows: List[Dict[str, Any]], question: str) -> str:
+        preferred_year = self._extract_preferred_xaf_year(question)
+        candidates = self._candidate_xaf_paths(rows, preferred_year)
+        if not candidates:
+            return (
+                "1. Direct answer\n"
+                "Ik kon geen XAF-bestand vinden om het aantal tax records te tellen.\n\n"
+                "2. Evidence from documents\n"
+                "Er zijn geen bruikbare XAF-bronnen gevonden in de huidige resultaten.\n\n"
+                "3. Important assumptions or missing information\n"
+                "Voor deze vraag is een lokaal beschikbaar .xaf-bestand nodig.\n\n"
+                "4. Suggested next step\n"
+                "Indexeer de XAF-bestanden opnieuw en stel de vraag opnieuw met een jaartal (bijv. 2025)."
+            )
+
+        for xaf_path in candidates:
+            count = self._count_xaf_tax_records(xaf_path)
+            if count is None:
+                continue
+            return (
+                "1. Direct answer\n"
+                f"Het aantal tax records is {count}.\n\n"
+                "2. Evidence from documents\n"
+                f"Geteld uit XAF-bestand: {xaf_path.name}.\n\n"
+                "3. Important assumptions or missing information\n"
+                "Tax records zijn geteld via VAT/tax-sectie in het XAF-bestand.\n\n"
+                "4. Suggested next step\n"
+                "Als je wilt, kan ik de records uitsplitsen per vatCode/taxCode."
+            )
+
+        return (
+            "1. Direct answer\n"
+            "Ik kon het aantal tax records niet betrouwbaar tellen uit de gevonden XAF-bronnen.\n\n"
+            "2. Evidence from documents\n"
+            "Er zijn XAF-bestanden gevonden, maar de tax-sectie kon niet worden uitgelezen.\n\n"
+            "3. Important assumptions or missing information\n"
+            "Het XAF-formaat of de inhoud kan afwijken van de verwachte structuur.\n\n"
+            "4. Suggested next step\n"
+            "Controleer het betreffende XAF-bestand en vraag eventueel om telling per specifieke sectie."
+        )
 
     def _prioritize_xaf_results(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         rescored: List[Tuple[float, Dict[str, Any]]] = []
