@@ -6,6 +6,7 @@ import uuid
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
+from mimetypes import guess_type
 
 from fastapi import (
     APIRouter,
@@ -41,18 +42,22 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/documents", tags=["documents"])
 
 
-def validate_pdf_file(file: UploadFile) -> None:
-    """Validate that upload is a PDF."""
-    if not file.filename.lower().endswith(".pdf"):
+SUPPORTED_UPLOAD_EXTENSIONS = {".pdf", ".xaf"}
+
+
+def validate_upload_file(file: UploadFile) -> None:
+    """Validate that upload has a supported extension."""
+    if not file.filename:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only PDF files are allowed",
+            detail="Filename is required",
         )
 
-    if file.content_type != "application/pdf":
+    extension = Path(file.filename).suffix.lower()
+    if extension not in SUPPORTED_UPLOAD_EXTENSIONS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid content type: {file.content_type}. Expected application/pdf",
+            detail=f"Unsupported file type '{extension}'. Allowed: {', '.join(sorted(SUPPORTED_UPLOAD_EXTENSIONS))}",
         )
 
 
@@ -109,8 +114,8 @@ async def upload_document(
     section_reference: Optional[str] = Form(None),
     api_key: str = Depends(verify_api_key),
 ) -> DocumentUploadResponse:
-    """Upload and index a PDF file."""
-    validate_pdf_file(file)
+    """Upload and index a supported file."""
+    validate_upload_file(file)
 
     try:
         doc_category = DocumentCategory(category.lower().replace(" ", "_"))
@@ -178,23 +183,14 @@ async def upload_document(
 
     try:
         pg_client.update_document_status(document_id, ProcessingStatus.PARSING)
-        try:
-            prepared = indexing_service.prepare_pdf_document(
-                file_path=file_path,
-                document_id=document_id,
-                source_filename=file.filename,
-                category=doc_category.value,
-                corpus_type="uploaded",
-                metadata=metadata_payload,
-            )
-        except TypeError:
-            prepared = indexing_service.prepare_pdf_document(
-                file_path=file_path,
-                document_id=document_id,
-                source_filename=file.filename,
-                category=doc_category.value,
-                metadata=metadata_payload,
-            )
+        prepared = indexing_service.prepare_document(
+            file_path=file_path,
+            document_id=document_id,
+            source_filename=file.filename,
+            category=doc_category.value,
+            corpus_type="uploaded",
+            metadata=metadata_payload,
+        )
 
         pg_client.update_document_status(
             document_id=document_id,
@@ -442,6 +438,11 @@ async def delete_document(
         if file_path.exists():
             file_path.unlink()
             logger.info(f"Deleted file: {file_path}")
+        if file_path.suffix.lower() == ".xaf":
+            preview_pdf = file_path.with_suffix(".pdf")
+            if preview_pdf.exists():
+                preview_pdf.unlink()
+                logger.info(f"Deleted XAF preview PDF: {preview_pdf}")
     except Exception as e:
         logger.warning(f"Failed to delete file: {e}")
 
@@ -455,14 +456,14 @@ async def download_document(
     document_id: str, api_key: str = Depends(verify_api_key)
 ) -> FileResponse:
     """
-    Download the original PDF document.
+    Download the original document.
 
     Args:
         document_id: Document ID
         api_key: API key for authentication
 
     Returns:
-        FileResponse: PDF file download
+        FileResponse: File download
 
     Raises:
         HTTPException: If document not found or file missing
@@ -480,12 +481,14 @@ async def download_document(
     if not file_path.exists():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"PDF file not found for document {document_id}",
+            detail=f"File not found for document {document_id}",
         )
+
+    media_type = guess_type(str(file_path))[0] or "application/octet-stream"
 
     return FileResponse(
         path=file_path,
-        media_type="application/pdf",
+        media_type=media_type,
         filename=doc.filename,
     )
 
@@ -494,7 +497,7 @@ async def download_document(
 async def view_document(
     document_id: str
 ) -> FileResponse:
-    """View PDF in browser (used by the UI source links)."""
+    """View document in browser (used by the UI source links)."""
     pg_client = get_postgres_client()
 
     doc = pg_client.get_document(document_id)
@@ -504,16 +507,24 @@ async def view_document(
             detail=f"Document not found: {document_id}",
         )
 
-    file_path = Path(doc.file_path)
-    if not file_path.exists():
+    source_file_path = Path(doc.file_path)
+    if not source_file_path.exists():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"PDF file not found for document {document_id}",
+            detail=f"File not found for document {document_id}",
         )
+
+    file_path = source_file_path
+    if source_file_path.suffix.lower() == ".xaf":
+        preview_pdf = source_file_path.with_suffix(".pdf")
+        if preview_pdf.exists():
+            file_path = preview_pdf
+
+    media_type = guess_type(str(file_path))[0] or "application/octet-stream"
 
     return FileResponse(
         path=file_path,
-        media_type="application/pdf",
-        filename=doc.filename,
+        media_type=media_type,
+        filename=file_path.name,
         content_disposition_type="inline"
     )

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Optimized document indexer with Elasticsearch performance tuning.
 Based on Elasticsearch bulk indexing best practices.
@@ -12,6 +12,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any
 import multiprocessing
 import time
+import subprocess
+import shutil
 
 from elasticsearch import Elasticsearch, helpers
 from src.services.document_indexing_service import DocumentIndexingService
@@ -21,6 +23,290 @@ from src.config import settings
 
 setup_logging(log_level=settings.log_level)
 logger = get_logger(__name__)
+
+
+def _pdf_has_readable_text(file_path: Path, max_pages: int = 5, min_chars: int = 80) -> bool:
+    """Heuristic check whether a PDF already contains extractable text."""
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(str(file_path))
+        sample = []
+        for page in reader.pages[:max_pages]:
+            sample.append((page.extract_text() or "").strip())
+        joined = " ".join(sample).strip()
+        return len(joined) >= min_chars
+    except Exception:
+        return False
+
+
+def _ocr_pdf_to_searchable(
+    input_pdf: Path,
+    output_pdf: Path,
+    language: str = "eng",
+    force_ocr: bool = True,
+    optimize_level: int = 1,
+) -> None:
+    """Run OCRmyPDF to create a searchable PDF."""
+    if not input_pdf.exists():
+        raise FileNotFoundError(f"Input PDF not found: {input_pdf}")
+
+    ocrmypdf_exe = shutil.which("ocrmypdf")
+    if ocrmypdf_exe:
+        command = [
+            ocrmypdf_exe,
+            "--deskew",
+            "--clean",
+            "--optimize",
+            str(optimize_level),
+            "-l",
+            language,
+            str(input_pdf),
+            str(output_pdf),
+        ]
+        if force_ocr:
+            command.insert(1, "--force-ocr")
+        try:
+            subprocess.run(command, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as exc:
+            msg = f"{exc.stdout or ''}\n{exc.stderr or ''}".lower()
+            if language != "eng" and "language data" in msg:
+                command[command.index(language)] = "eng"
+                subprocess.run(command, check=True)
+            else:
+                raise
+        return
+
+    # Fallback: run OCRmyPDF in Docker when local executable is unavailable.
+    docker_exe = shutil.which("docker")
+    if not docker_exe:
+        raise RuntimeError("ocrmypdf executable not found in PATH and Docker is unavailable")
+
+    work_dir = str(input_pdf.parent.resolve())
+    docker_in = f"/work/{input_pdf.name}"
+    docker_out = f"/work/{output_pdf.name}"
+    command = [
+        docker_exe,
+        "run",
+        "--rm",
+        "-v",
+        f"{work_dir}:/work",
+        "jbarlow83/ocrmypdf",
+        "--deskew",
+        "--clean",
+        "--optimize",
+        str(optimize_level),
+        "-l",
+        language,
+        docker_in,
+        docker_out,
+    ]
+    if force_ocr:
+        command.insert(8, "--force-ocr")
+
+    try:
+        subprocess.run(command, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as exc:
+        msg = f"{exc.stdout or ''}\n{exc.stderr or ''}".lower()
+        if language != "eng" and "language data" in msg:
+            command[command.index(language)] = "eng"
+            subprocess.run(command, check=True)
+        else:
+            raise
+
+
+def maybe_make_searchable_pdf(
+    file_path: Path,
+    ocr_pdfs: bool,
+    ocr_language: str,
+    ocr_force: bool,
+) -> Path:
+    """
+    If file is a PDF with little/no extractable text, create a searchable
+    sibling PDF and return that path for indexing. Otherwise return original.
+    """
+    if not ocr_pdfs or file_path.suffix.lower() != ".pdf":
+        return file_path
+
+    # Do not OCR generated derivatives repeatedly.
+    if file_path.stem.lower().endswith("_searchable"):
+        return file_path
+
+    has_text = _pdf_has_readable_text(file_path)
+    if has_text and not ocr_force:
+        return file_path
+
+    output_pdf = file_path.with_name(f"{file_path.stem}_searchable.pdf")
+
+    if output_pdf.exists() and output_pdf.stat().st_mtime >= file_path.stat().st_mtime and not ocr_force:
+        return output_pdf
+
+    _ocr_pdf_to_searchable(
+        input_pdf=file_path,
+        output_pdf=output_pdf,
+        language=ocr_language,
+        force_ocr=ocr_force,
+        optimize_level=1,
+    )
+    return output_pdf
+
+
+def _convert_xaf_to_pdf(xaf_path: Path, output_pdf: Path) -> bool:
+    """Convert XAF to PDF, using local conversion first and Docker fallback."""
+    try:
+        from xaf_to_pdf import build_pdf
+
+        build_pdf(xaf_path, output_pdf)
+        if output_pdf.exists():
+            return True
+    except Exception:
+        pass
+
+    docker_exe = shutil.which("docker")
+    if not docker_exe:
+        return False
+
+    folder_name = xaf_path.parent.name
+    if folder_name not in {"Source_files", "Existing_files"}:
+        return False
+
+    cmd = [
+        docker_exe,
+        "compose",
+        "-p",
+        "financial-bot",
+        "run",
+        "--rm",
+        "app",
+        "python",
+        "xaf_to_pdf.py",
+        f"/app/{folder_name}/{xaf_path.name}",
+        "-o",
+        f"/app/{folder_name}/{output_pdf.name}",
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        return output_pdf.exists()
+    except Exception:
+        return False
+
+
+def prune_pdf_files_in_directory(
+    directory: Path,
+    ocr_pdfs: bool,
+    ocr_language: str,
+    ocr_force: bool,
+) -> Dict[str, int]:
+    """
+    Keep only:
+    - *_searchable.pdf
+    - PDFs generated from XAF (same stem has .xaf)
+    - non-PDF files (e.g. .xaf, .xlsx)
+    Remove:
+    - *.preview.pdf
+    - original PDFs when *_searchable exists
+    - unreadable PDFs only when a searchable replacement is available
+    """
+    stats = {
+        "removed": 0,
+        "kept": 0,
+        "created_searchable": 0,
+        "failed_to_convert": 0,
+        "xaf_converted_to_pdf": 0,
+        "xaf_failed_conversion": 0,
+        "xaf_removed": 0,
+    }
+    if not directory.exists():
+        return stats
+
+    # 1) Convert XAF files to PDF and remove XAF after successful conversion.
+    xaf_generated_pdf_names = set()
+    xaf_files = sorted(p for p in directory.iterdir() if p.is_file() and p.suffix.lower() == ".xaf")
+    for xaf in xaf_files:
+        out_pdf = xaf.with_suffix(".pdf")
+        converted = _convert_xaf_to_pdf(xaf, out_pdf)
+
+        if converted:
+            xaf_generated_pdf_names.add(out_pdf.name.lower())
+            stats["xaf_converted_to_pdf"] += 1
+            try:
+                xaf.unlink(missing_ok=True)
+                stats["xaf_removed"] += 1
+            except Exception:
+                pass
+        else:
+            stats["xaf_failed_conversion"] += 1
+
+    pdf_files = sorted(p for p in directory.iterdir() if p.is_file() and p.suffix.lower() == ".pdf")
+    for pdf in pdf_files:
+        lower_name = pdf.name.lower()
+        stem_lower = pdf.stem.lower()
+
+        # Remove temporary preview derivatives.
+        if lower_name.endswith(".preview.pdf"):
+            try:
+                pdf.unlink(missing_ok=True)
+                stats["removed"] += 1
+            except Exception:
+                pass
+            continue
+
+        # Keep searchable PDFs.
+        if stem_lower.endswith("_searchable"):
+            stats["kept"] += 1
+            continue
+
+        # Keep XAF-generated PDFs.
+        # - freshly generated in this run
+        # - historical naming convention (AuditFile*.pdf)
+        if lower_name in xaf_generated_pdf_names or lower_name.startswith("auditfile"):
+            stats["kept"] += 1
+            continue
+
+        searchable = pdf.with_name(f"{pdf.stem}_searchable.pdf")
+        conversion_failed = False
+        if not searchable.exists() and ocr_pdfs:
+            try:
+                _ocr_pdf_to_searchable(
+                    input_pdf=pdf,
+                    output_pdf=searchable,
+                    language=ocr_language,
+                    force_ocr=ocr_force,
+                    optimize_level=1,
+                )
+                stats["created_searchable"] += 1
+            except Exception:
+                stats["failed_to_convert"] += 1
+                conversion_failed = True
+
+        if searchable.exists():
+            try:
+                pdf.unlink(missing_ok=True)
+                stats["removed"] += 1
+            except Exception:
+                pass
+            stats["kept"] += 1
+            continue
+
+        # Never delete the user's original file when OCR conversion fails.
+        # Keep it so the indexer can still process readable PDFs.
+        if conversion_failed:
+            stats["kept"] += 1
+            continue
+
+        # Keep readable PDFs even without a generated searchable sibling.
+        if _pdf_has_readable_text(pdf):
+            stats["kept"] += 1
+            continue
+
+        # If still unreadable and not XAF-generated, remove to enforce keep policy.
+        try:
+            pdf.unlink(missing_ok=True)
+            stats["removed"] += 1
+        except Exception:
+            pass
+
+    return stats
 
 
 class OptimizedElasticsearchIndexer:
@@ -71,7 +357,7 @@ class OptimizedElasticsearchIndexer:
                 index=self.index_name,
                 body={"index": {"refresh_interval": "-1"}}
             )
-            logger.info("✓ Disabled index refresh (will re-enable after indexing)")
+            logger.info("âœ“ Disabled index refresh (will re-enable after indexing)")
 
             # 2. Set replicas to 0 during indexing (faster writes)
             self.es.indices.put_settings(
@@ -90,7 +376,7 @@ class OptimizedElasticsearchIndexer:
                         }
                     }
                 )
-                logger.info("✓ Increased write thread pool size")
+                logger.info("âœ“ Increased write thread pool size")
             except Exception as e:
                 logger.warning(f"Could not modify cluster settings (may not have permission): {e}")
 
@@ -210,21 +496,50 @@ def process_document_parallel(
     text_chunk_size: int,
     no_chunks: bool,
     corpus_type: str,
+    ocr_pdfs: bool,
+    ocr_language: str,
+    ocr_force: bool,
 ) -> Dict[str, Any]:
     """Process a single document (parallel-safe)."""
     try:
         print(f"[{index}/{total}] Processing: {file_path.name} ({file_path.stat().st_size / (1024*1024):.1f} MB)")
         start = time.time()
+        working_file = file_path
+        source_filename_for_index = file_path.name
+
+        if file_path.suffix.lower() == ".pdf" and ocr_pdfs:
+            try:
+                working_file = maybe_make_searchable_pdf(
+                    file_path=file_path,
+                    ocr_pdfs=ocr_pdfs,
+                    ocr_language=ocr_language,
+                    ocr_force=ocr_force,
+                )
+                if working_file != file_path:
+                    print(f"[{index}/{total}] [OCR] Created searchable PDF: {working_file.name}")
+                    source_filename_for_index = working_file.name
+            except Exception as ocr_err:
+                print(f"[{index}/{total}] [WARN] OCR skipped for {file_path.name}: {ocr_err}")
+        elif file_path.suffix.lower() == ".pdf":
+            source_filename_for_index = file_path.name
+
+        # Heuristic readability checks can miss valid PDFs. Let the main extractor
+        # attempt parsing/OCR first and fail only if no content is extracted.
+        if working_file.suffix.lower() == ".pdf" and not _pdf_has_readable_text(working_file):
+            print(
+                f"[{index}/{total}] [WARN] Low/undetected extractable text by heuristic for "
+                f"{working_file.name}; attempting full extraction anyway."
+            )
 
         chunk_size = text_chunk_size if not no_chunks else 10_000_000
         indexing_service = DocumentIndexingService(chunk_size=chunk_size, overlap=500)
         prepared = indexing_service.prepare_document(
-            file_path=file_path,
+            file_path=working_file,
             document_id=f"{corpus_type}-file-{file_path.stem}",
-            source_filename=file_path.name,
+            source_filename=source_filename_for_index,
             category="other",
             corpus_type=corpus_type,
-            metadata={"source_name": file_path.name},
+            metadata={"source_name": source_filename_for_index},
         )
         elapsed = time.time() - start
 
@@ -270,6 +585,20 @@ def main():
                        help='Directory containing existing/reference PDF files (default: Existing_files)')
     parser.add_argument('--append', action='store_true',
                        help='Append to existing index instead of clearing/recreating it')
+    parser.add_argument('--ocr-pdfs', dest='ocr_pdfs', action='store_true',
+                       help='Enable OCR preprocessing for unreadable PDFs before indexing')
+    parser.add_argument('--no-ocr-pdfs', dest='ocr_pdfs', action='store_false',
+                       help='Disable OCR preprocessing for PDFs')
+    parser.set_defaults(ocr_pdfs=True)
+    parser.add_argument('--ocr-language', default='eng',
+                       help='OCR language(s), e.g. eng, nld, or eng+nld')
+    parser.add_argument('--ocr-force', action='store_true',
+                       help='Force OCR even when PDF already has readable text')
+    parser.add_argument('--prune-pdf-files', dest='prune_pdf_files', action='store_true',
+                       help='Prune PDFs so only searchable and XAF-generated PDFs remain')
+    parser.add_argument('--no-prune-pdf-files', dest='prune_pdf_files', action='store_false',
+                       help='Disable PDF pruning before indexing')
+    parser.set_defaults(prune_pdf_files=False)
     parser.add_argument('--yes', '-y', action='store_true')
     args = parser.parse_args()
 
@@ -284,20 +613,54 @@ def main():
     workers = args.workers or max(2, cpu_count - 1)
     print(f"CPUs: {cpu_count} | Workers: {workers}")
     print(f"Bulk chunk size: {args.chunk_size} | Text chunk size: {args.text_chunk_size}")
+    print(f"OCR PDFs: {'enabled' if args.ocr_pdfs else 'disabled'} | OCR language: {args.ocr_language}")
+    print(f"Prune PDFs: {'enabled' if args.prune_pdf_files else 'disabled'}")
     print(f"Index mode: {'append' if args.append else 'rebuild'}")
     print()
 
     source_dir = Path(args.source_dir)
     existing_dir = Path(args.existing_dir)
     supported_extensions = [".pdf", ".xlsx", ".xls", ".xaf"]
-    uploaded_files = sorted(
-        f for f in source_dir.iterdir()
-        if f.is_file() and f.suffix.lower() in supported_extensions
-    ) if source_dir.exists() else []
-    existing_files = sorted(
-        f for f in existing_dir.iterdir()
-        if f.is_file() and f.suffix.lower() in supported_extensions
-    ) if existing_dir.exists() else []
+    if args.prune_pdf_files:
+        print("Pruning PDFs in source folders (keep searchable + XAF-generated only)...")
+        source_stats = prune_pdf_files_in_directory(
+            directory=source_dir,
+            ocr_pdfs=args.ocr_pdfs,
+            ocr_language=args.ocr_language,
+            ocr_force=args.ocr_force,
+        )
+        existing_stats = prune_pdf_files_in_directory(
+            directory=existing_dir,
+            ocr_pdfs=args.ocr_pdfs,
+            ocr_language=args.ocr_language,
+            ocr_force=args.ocr_force,
+        )
+        print(
+            f"  Source_files: removed={source_stats['removed']}, "
+            f"created_searchable={source_stats['created_searchable']}, "
+            f"failed_to_convert={source_stats['failed_to_convert']}"
+        )
+        print(
+            f"  Existing_files: removed={existing_stats['removed']}, "
+            f"created_searchable={existing_stats['created_searchable']}, "
+            f"failed_to_convert={existing_stats['failed_to_convert']}"
+        )
+        print()
+
+    def is_indexable(path: Path) -> bool:
+        if not path.is_file():
+            return False
+        if path.suffix.lower() not in supported_extensions:
+            return False
+        # Avoid duplicate indexing of OCR derivatives when the original exists.
+        if path.suffix.lower() == ".pdf" and path.stem.lower().endswith("_searchable"):
+            original = path.with_name(path.stem[:-11] + ".pdf")
+            if original.exists():
+                return False
+        return True
+
+    uploaded_files = sorted(f for f in source_dir.iterdir() if is_indexable(f)) if source_dir.exists() else []
+    existing_files = sorted(f for f in existing_dir.iterdir() if is_indexable(f)) if existing_dir.exists() else []
     jobs = (
         [("uploaded", f) for f in uploaded_files]
         + [("existing", f) for f in existing_files]
@@ -349,6 +712,9 @@ def main():
                 args.text_chunk_size,
                 args.no_chunks,
                 corpus_type,
+                args.ocr_pdfs,
+                args.ocr_language,
+                args.ocr_force,
             ): src_file
             for i, (corpus_type, src_file) in enumerate(jobs, 1)
         }
@@ -498,12 +864,14 @@ def main():
         print(f"[OK] Indexed: {success_count} documents")
         if error_count > 0:
             print(f"[ERR] Errors: {error_count}")
+            if result.get("errors"):
+                print(f"[ERR] First bulk error: {result['errors'][0]}")
         print()
 
         # Restore normal settings
         print("Restoring normal Elasticsearch settings...")
         indexer.restore_normal_settings()
-        print("✓ Index ready for searching")
+        print("[OK] Index ready for searching")
         print()
 
     except Exception as e:

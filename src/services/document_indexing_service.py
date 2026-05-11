@@ -63,6 +63,7 @@ class DocumentIndexingService:
 
         upload_date = datetime.utcnow().isoformat()
         file_size = file_path.stat().st_size
+        view_filename = metadata.get("view_filename") or source_filename
         documents: List[Dict[str, Any]] = []
 
         for page_entry in pages:
@@ -75,6 +76,7 @@ class DocumentIndexingService:
                 merged_metadata = {
                     **metadata,
                     "source_filename": source_filename,
+                    "view_filename": view_filename,
                     "page_number": page_number,
                     "chunk_id": chunk_id,
                 }
@@ -84,6 +86,7 @@ class DocumentIndexingService:
                     "document_id": document_id,
                     "title": f"{Path(source_filename).stem} - Page {page_number}",
                     "filename": source_filename,
+                    "view_filename": view_filename,
                     "source_filename": source_filename,
                     "content": chunk_text,
                     "excerpt": chunk_text[:500],
@@ -144,10 +147,17 @@ class DocumentIndexingService:
         resolved_corpus_type = corpus_type if corpus_type in {"existing", "uploaded"} else "uploaded"
 
         if detected_type == "xaf":
+            view_filename = source_filename
             converted_path = get_xaf_conversion_service().convert_to_text_file(file_path)
             metadata["xaf_converted_path"] = str(converted_path)
+            preview_pdf_path = get_xaf_conversion_service().convert_to_pdf_file(file_path)
+            if preview_pdf_path:
+                metadata["xaf_preview_pdf"] = str(preview_pdf_path)
+                view_filename = preview_pdf_path.name
+            metadata["view_filename"] = view_filename
             raw_text = converted_path.read_text(encoding="utf-8", errors="ignore")
         else:
+            view_filename = source_filename
             raw_text = self.processor.extract_text_from_file(file_path)
 
         if (
@@ -180,6 +190,7 @@ class DocumentIndexingService:
             merged_metadata = {
                 **metadata,
                 "source_filename": source_filename,
+                "view_filename": view_filename,
                 "chunk_id": chunk_id,
             }
             documents.append(
@@ -189,6 +200,7 @@ class DocumentIndexingService:
                     "document_id": document_id,
                     "title": f"{Path(source_filename).stem} - Part {chunk_index}",
                     "filename": source_filename,
+                    "view_filename": view_filename,
                     "source_filename": source_filename,
                     "content": chunk_text,
                     "excerpt": chunk_text[:500],
@@ -287,17 +299,39 @@ class DocumentIndexingService:
         return "other"
 
     def _infer_tax_year(self, source_filename: str, pages: List[Dict[str, Any]]) -> Optional[int]:
+        # 1) Filename hint (strong for files like AuditFile2025...)
+        filename_years = [int(y) for y in re.findall(r"\b(19\d{2}|20\d{2})\b", source_filename)]
+
+        # 2) Use only the first pages/chunks for inference stability.
+        sample_text = " ".join(page.get("content", "")[:8000] for page in pages[:3])
+
+        # 3) XAF-specific strong signal.
+        fiscal_year_matches = [
+            int(m.group(1))
+            for m in re.finditer(r"\bfiscal(?:\s*year|Year)\s*:\s*(20\d{2})\b", sample_text, flags=re.IGNORECASE)
+        ]
+        if fiscal_year_matches:
+            return max(fiscal_year_matches)
+
+        # 4) Date-pattern years (YYYY-MM-DD) are more reliable than raw numbers.
+        date_years = [int(y) for y in re.findall(r"\b(20\d{2})-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])\b", sample_text)]
+
+        # 5) Fallback: general year tokens in a safe range.
+        text_years = [int(y) for y in re.findall(r"\b(19\d{2}|20\d{2})\b", sample_text)]
+
         candidates: List[int] = []
-        filename_years = re.findall(r"\b(19\d{2}|20\d{2}|2100)\b", source_filename)
-        candidates.extend(int(y) for y in filename_years)
-        for page in pages[:3]:
-            years = re.findall(r"\b(19\d{2}|20\d{2}|2100)\b", page.get("content", ""))
-            candidates.extend(int(y) for y in years)
-        valid = [y for y in candidates if 1900 <= y <= 2100]
-        if not valid:
+        candidates.extend(y for y in filename_years if 1990 <= y <= 2099)
+        candidates.extend(y for y in date_years if 1990 <= y <= 2099)
+        candidates.extend(y for y in text_years if 1990 <= y <= 2099)
+        if not candidates:
             return None
-        # Prefer the most recent explicit year.
-        return max(valid)
+
+        # Prefer the most frequent year; tie-break on recency.
+        counts: Dict[int, int] = {}
+        for y in candidates:
+            counts[y] = counts.get(y, 0) + 1
+        best_year = sorted(counts.items(), key=lambda kv: (kv[1], kv[0]), reverse=True)[0][0]
+        return best_year
 
     def _infer_jurisdiction(self, source_filename: str, pages: List[Dict[str, Any]]) -> Optional[str]:
         text_blob = f"{source_filename} " + " ".join(

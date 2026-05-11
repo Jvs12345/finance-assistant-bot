@@ -1,21 +1,36 @@
 ﻿# Financial Document Assistant
 
 ## Short description
-This is a local financial document assistant. It answers questions about uploaded tax, accounting, and finance documents. It searches the documents first and answers with source references.
+This project is a local document assistant for financial and technical files. It searches indexed documents first, then answers with source references so output can be checked quickly.
 
-## Why I built it
-I first built a Be Informed documentation chatbot. I reused the same local RAG setup to test whether it also works for accounting and tax documents. I wanted to keep everything local and make answers traceable to source text.
+## Why this project exists
+The project started as a local documentation assistant and was extended to accounting, tax, and engineering documents. The main goals are:
+- keep document processing local
+- keep answers traceable to source text
+- support practical preparation work (not final sign-off)
+
+## Why we switched to Gemma (Ollama)
+Default model choice is now `gemma3:4b`.
+
+Reason for the switch:
+- better instruction-following for fixed answer structures used in this app
+- more consistent Dutch output in mixed Dutch/English document sets
+- stable local performance for Q&A, summary, checklist, and pilot-style prompts
+- fully local runtime through Ollama (no cloud dependency)
+
+This does not mean Gemma is always best in every setup. It is currently the best fit for this project’s local workflow and demo goals.
 
 ## What it can do
 - Index PDFs from `Source_files/` in batch mode.
-- Index reference PDFs from `Existing_files/` for baseline material.
+- Index reference PDFs from `Existing_files/`.
 - Upload PDFs through the API and index them in the same Elasticsearch index.
 - Ask questions through the web UI and API.
 - Filter retrieval by document type, jurisdiction, and tax year.
 - Show source snippets and open source PDFs from the answer.
 - Run local calculations when the answer includes a calculation payload.
 - Run formula-driven calculations from natural language using the local formula registry.
-- Handle advisor workflows from natural-language prompts (missing info checks, inconsistency checks, advisory points, insurance risk scan, client dossier summary).
+- Handle advisor workflows (missing info checks, inconsistency checks, advisory points, insurance risk scan, client dossier summary).
+- Handle document-summary and engineering demo workflows (technical requirements, CE gaps, quotation prep, use-case prioritization, pilot framing).
 
 ## How it works
 1. PDF text is extracted and split into chunks.
@@ -74,17 +89,17 @@ FINAL_CONTEXT_CHUNKS=5
 MAX_CONTEXT_CHARS=7500
 MAX_CHARS_PER_CHUNK=1500
 ENABLE_LATENCY_LOGS=false
-OLLAMA_MODEL=llama3.2
+OLLAMA_MODEL=gemma3:4b
 OLLAMA_NUM_PREDICT=700
 DEMO_MODE=false
-DEMO_OLLAMA_MODEL=phi3
+DEMO_OLLAMA_MODEL=gemma3:4b
 ```
 
 Notes:
 - Lower `FINAL_CONTEXT_CHUNKS` or `MAX_CONTEXT_CHARS` to reduce prompt size.
 - Keep `RETRIEVAL_TOP_K` high enough for source quality.
-- For demo speed, set `DEMO_MODE=true` and choose a faster local model in `DEMO_OLLAMA_MODEL`.
-- Calculation answers can bypass LLM generation when all values are source-validated, so they are usually faster than open-ended questions.
+- For demo speed, set `DEMO_MODE=true` and choose a faster local model in `DEMO_OLLAMA_MODEL` if needed.
+- Calculation answers can bypass LLM generation when all values are source-validated.
 
 ## How to add documents
 ### Option A: Batch indexing
@@ -92,12 +107,10 @@ Notes:
 - Run:
 
 ```powershell
-INDEX_SOURCE_FILES.bat
+INDEX_BOTH.bat
 ```
 
-Optional legacy scripts:
-- `INDEX_BOTH.bat` indexes `Existing_files/` and `Source_files/`
-- `INDEX_EXISTING_FILES.bat` indexes only `Existing_files/`
+`INDEX_BOTH.bat` indexes `Existing_files/` and `Source_files/` into the local Elasticsearch index.
 
 ### Option B: API upload
 
@@ -131,21 +144,17 @@ Then ask questions at:
 - Bereken de omzetgroei als de benodigde cijfers beschikbaar zijn.
 
 ## Limitations
-- This is a proof of concept.
-- It does not replace an accountant, tax advisor, or lawyer.
-- It cannot guarantee correct tax advice.
-- Output quality depends on document quality and OCR.
+- This is a working prototype.
+- It does not replace an accountant, tax advisor, lawyer, or compliance officer.
+- Output quality depends on document quality and OCR quality.
 - Scanned PDFs can fail if text extraction is poor.
 - RAG reduces hallucination risk but does not remove it completely.
 - Human review is still required for important decisions.
 
-## Disclaimer
-This tool helps with document analysis. Check important tax and accounting decisions with a qualified professional.
-
 ## Local-first note
-- The default setup is local: Elasticsearch + Ollama run on your own machine.
+- Default setup is local: Elasticsearch + Ollama run on your own machine.
 - Client data stays in your local documents unless you explicitly change the setup.
-- This project is a proof of concept and not a replacement for certified advisory work.
+- This project supports preparation and document review, not final certified conclusions.
 
 ## Project structure
 ```text
@@ -164,7 +173,7 @@ uploads/          Temporary upload folder (ignored in git)
 
 ## Manual test checklist
 1. Start services and open `http://localhost:8100/`.
-2. Put one PDF in `Source_files/`, then run `INDEX_SOURCE_FILES.bat`.
+2. Put one PDF in `Source_files/`, then run `INDEX_BOTH.bat`.
 3. Ask a normal question in the UI and verify source cards appear.
 4. Upload a PDF through `/api/v1/documents/upload` and query it.
 5. Delete an uploaded document with `DELETE /api/v1/documents/{document_id}` and re-query.

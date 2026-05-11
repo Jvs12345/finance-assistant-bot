@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -229,7 +229,7 @@
 <body>
     <div class="header">
         <div class="title">Financial Document Assistant</div>
-        <div class="subtitle">Q&A over tax, accounting, and financial documents.</div>
+        <div class="subtitle">Lokale Q&A over financiële, accounting- en technische documenten.</div>
         <div class="subtitle" style="margin-top:6px;color:#49606c;">
             Deze assistent zoekt lokaal in de beschikbare documenten. Gebruik de uitkomsten als voorbereiding en controleer belangrijke conclusies altijd zelf.
         </div>
@@ -238,17 +238,7 @@
     <div class="chat-container" id="chatContainer">
         <div class="message ai">
             <div class="bubble">
-                Ask a question about your uploaded financial and tax documents.
-                <br><br>
-                <strong>Voorbeeldvragen:</strong>
-                <ul class="examples" id="exampleQuestions">
-                    <li onclick="setMessage('Welke informatie ontbreekt nog voordat de jaarrekening kan worden opgesteld?')">Welke informatie ontbreekt nog voordat de jaarrekening kan worden opgesteld?</li>
-                    <li onclick="setMessage('Controleer of er inconsistenties zijn tussen de winst-en-verliesrekening, btw-overzicht en klantnotities.')">Controleer of er inconsistenties zijn tussen de winst-en-verliesrekening, btw-overzicht en klantnotities.</li>
-                    <li onclick="setMessage('Welke drie adviespunten kan ik met deze MKB-klant bespreken op basis van de documenten?')">Welke drie adviespunten kan ik met deze MKB-klant bespreken op basis van de documenten?</li>
-                    <li onclick="setMessage('Welke verzekeringsrisico’s zie je op basis van de bedrijfsactiviteiten, activa en contractinformatie?')">Welke verzekeringsrisico’s zie je op basis van de bedrijfsactiviteiten, activa en contractinformatie?</li>
-                    <li onclick="setMessage('Vat de belangrijkste punten uit dit klantdossier samen.')">Vat de belangrijkste punten uit dit klantdossier samen.</li>
-                    <li onclick="setMessage('Bereken de omzetgroei als de benodigde cijfers beschikbaar zijn.')">Bereken de omzetgroei als de benodigde cijfers beschikbaar zijn.</li>
-                </ul>
+                Stel een vraag over je lokaal geïndexeerde documenten.
             </div>
         </div>
     </div>
@@ -256,7 +246,7 @@
     <div class="input-panel">
         <div class="filters">
             <select id="documentType">
-                <option value="">Document type (optional)</option>
+                <option value="">Documenttype (optioneel)</option>
                 <option value="tax_law">Tax law</option>
                 <option value="regulation">Regulation</option>
                 <option value="annual_report">Annual report</option>
@@ -267,12 +257,12 @@
                 <option value="correspondence">Correspondence</option>
                 <option value="other">Other</option>
             </select>
-            <input id="jurisdiction" type="text" placeholder="Jurisdiction (e.g., Netherlands)">
-            <input id="taxYear" type="number" min="1900" max="2100" placeholder="Tax year (e.g., 2025)">
+            <input id="jurisdiction" type="text" placeholder="Rechtsgebied (bijv. Netherlands)">
+            <input id="taxYear" type="number" min="1900" max="2100" placeholder="Boekjaar (bijv. 2025)">
         </div>
         <div class="input-row">
-            <input id="messageInput" class="message-input" type="text" placeholder="Ask a question about your documents..." autocomplete="off">
-            <button id="sendBtn" class="send-btn">Send</button>
+            <input id="messageInput" class="message-input" type="text" placeholder="Stel een vraag over je documenten..." autocomplete="off">
+            <button id="sendBtn" class="send-btn">Verstuur</button>
         </div>
     </div>
 
@@ -399,8 +389,25 @@
             return `/static/pdf_highlight.html?${params.toString()}`;
         }
 
+        function getFilenameExtension(filename) {
+            const name = String(filename || "").toLowerCase();
+            const lastDot = name.lastIndexOf(".");
+            return lastDot >= 0 ? name.slice(lastDot) : "";
+        }
+
+        function isPdfFilename(filename) {
+            return getFilenameExtension(filename) === ".pdf";
+        }
+
+        function isBatchIndexedSourceDocumentId(docId) {
+            const id = String(docId || "");
+            return id.includes("-file-") || id.startsWith("pdf-") || id.includes("-pdf-");
+        }
+
         function openSourcePdf(event, anchor) {
             if (!LAZY_PDF_HIGHLIGHT) return true;
+            const fileKind = anchor.getAttribute("data-file-kind");
+            if (fileKind !== "pdf") return true;
             const rawPdfUrl = anchor.getAttribute("data-raw-pdf-url");
             if (!rawPdfUrl || rawPdfUrl === "#") return true;
             const source = {
@@ -456,38 +463,43 @@
             }
 
             return sources.map((s) => {
-                const fragment = buildPdfFragment(s);
                 const docId = String(s.document_id || "");
-                const isBatchSourceFile = docId.startsWith("pdf-") || docId.includes("-pdf-");
+                const viewFilename = String(s.view_filename || s.filename || "");
+                const isPdf = isPdfFilename(viewFilename);
+                const isConvertedXafPreview = getFilenameExtension(s.filename) === ".xaf" && isPdf;
+                const fragment = (isPdf && !isConvertedXafPreview) ? buildPdfFragment(s) : "";
+                const isBatchSourceFile = isBatchIndexedSourceDocumentId(docId);
                 const batchFolder = (s.corpus_type === "existing") ? "existing_files" : "source_files";
-                const rawPdfUrl = isBatchSourceFile && s.filename
-                    ? `/${batchFolder}/${encodeURIComponent(s.filename)}${fragment}`
+                const rawPdfUrl = isBatchSourceFile && viewFilename
+                    ? `/${batchFolder}/${encodeURIComponent(viewFilename)}${fragment}`
                     : (s.document_id ? `/api/v1/documents/${s.document_id}/view${fragment}` : "#");
-                const escapedSnippet = escapeHtml(s.snippet || "");
+                const escapedSnippet = escapeHtml(repairTextArtifacts(s.snippet || ""));
                 const escapedAnswerText = escapeHtml(answerText || "");
-                const contextText = `${s.filename || ""} ${s.title || ""} ${s.snippet || ""}`;
+                const contextText = `${s.filename || ""} ${s.title || ""} ${repairTextArtifacts(s.snippet || "")}`;
                 const resolvedType = resolveType(s, contextText);
                 const resolvedJurisdiction = resolveJurisdiction(s, contextText);
+                const locationLabel = (isPdf && !isConvertedXafPreview) ? "Pagina" : "Fragment";
                 const metaParts = [
                     `Score: ${Number(s.score || 0).toFixed(2)}`,
-                    `Page: ${s.page || "N/A"}`
+                    `${locationLabel}: ${s.page || "N/A"}`
                 ];
                 if (resolvedType) metaParts.push(`Type: ${resolvedType}`);
-                if (resolvedJurisdiction) metaParts.push(`Jurisdiction: ${resolvedJurisdiction}`);
-                if (s.tax_year && s.tax_year !== "unknown") metaParts.push(`Tax year: ${s.tax_year}`);
+                if (resolvedJurisdiction) metaParts.push(`Rechtsgebied: ${resolvedJurisdiction}`);
+                if (s.tax_year && s.tax_year !== "unknown") metaParts.push(`Boekjaar: ${s.tax_year}`);
 
                 return `
                     <a href="${rawPdfUrl}" target="_blank" class="source-item"
                         data-raw-pdf-url="${rawPdfUrl}"
+                        data-file-kind="${(isPdf && !isConvertedXafPreview) ? "pdf" : "file"}"
                         data-snippet="${escapedSnippet}"
                         data-page="${s.page || 1}"
                         data-answer-text="${escapedAnswerText}"
                         onclick="return openSourcePdf(event, this)">
-                        <div><strong>${s.filename || "Document"}</strong></div>
+                        <div><strong>${escapeHtml(repairTextArtifacts(s.filename || "Document"))}</strong></div>
                         <div class="source-meta">
                             ${metaParts.join(" | ")}
                         </div>
-                        ${s.snippet ? `<div class="source-snippet">${escapeHtml(s.snippet)}</div>` : ""}
+                        ${s.snippet ? `<div class="source-snippet">${escapeHtml(repairTextArtifacts(s.snippet))}</div>` : ""}
                     </a>
                 `;
             }).join("");
@@ -510,9 +522,10 @@
             const node = document.createElement("div");
             node.className = `message ${role}`;
 
+            const repairedText = repairTextArtifacts(text || "");
             const visibleText = (role === "ai" && sources && sources.length > 0)
-                ? stripTrailingSourceSection(text)
-                : text;
+                ? stripTrailingSourceSection(repairedText)
+                : repairedText;
             let html = visibleText.replace(/\n/g, "<br>");
             if (role === "ai" && warnings && warnings.length > 0) {
                 html += `<div class="source-meta" style="margin-top:8px;color:#8a6d3b">${warnings.map(escapeHtml).join("<br>")}</div>`;
@@ -589,7 +602,7 @@
                     throw new Error(data?.detail || "Request failed");
                 }
                 const requestSeconds = ((performance.now() - requestStarted) / 1000).toFixed(2);
-                const responseTime = `Response time: ${requestSeconds}s`;
+                const responseTime = `Responstijd: ${requestSeconds}s`;
 
                 addMessage(
                     "ai",
@@ -602,8 +615,8 @@
                 conversationHistory.push({ role: "assistant", content: data.answer || "" });
             } catch (err) {
                 removeNode(typingId);
-                const detail = (err && err.message) ? `\n\nError detail: ${err.message}` : "";
-                addMessage("ai", `I could not process this request. Please verify the backend is running and try again.${detail}`);
+                const detail = (err && err.message) ? `\n\nFoutdetail: ${String(err.message).slice(0, 180)}` : "";
+                addMessage("ai", `Ik kon dit verzoek niet verwerken. Controleer of de backend draait en probeer het opnieuw.${detail}`);
                 console.error(err);
             } finally {
                 isProcessing = false;
@@ -618,6 +631,37 @@
                 sendMessage();
             }
         });
+
+        function repairTextArtifacts(value) {
+            return String(value || "")
+                .replaceAll("â€™", "'")
+                .replaceAll("â", "'")
+                .replaceAll("â€˜", "'")
+                .replaceAll("â", "'")
+                .replaceAll("â€œ", "\"")
+                .replaceAll("â", "\"")
+                .replaceAll("â€", "\"")
+                .replaceAll("â", "\"")
+                .replaceAll("â€“", "-")
+                .replaceAll("â", "-")
+                .replaceAll("â€”", "-")
+                .replaceAll("â", "-")
+                .replaceAll("â€¦", "...")
+                .replaceAll("â¦", "...")
+                .replaceAll("â‚¬", "€")
+                .replaceAll("Ã©", "é")
+                .replaceAll("Ã¨", "è")
+                .replaceAll("Ã«", "ë")
+                .replaceAll("Ãª", "ê")
+                .replaceAll("Ã¡", "á")
+                .replaceAll("Ã ", "à")
+                .replaceAll("Ã¶", "ö")
+                .replaceAll("Ã¼", "ü")
+                .replaceAll("Ã¯", "ï")
+                .replaceAll("Ã§", "ç")
+                .replaceAll("Ã²", "ò")
+                .replaceAll("Ã´", "ô");
+        }
     </script>
 </body>
 </html>

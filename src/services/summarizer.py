@@ -3,7 +3,7 @@
 from typing import Optional
 from anthropic import Anthropic
 
-from src.config import settings
+from src.config import settings, is_configured_secret
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -19,6 +19,10 @@ class Summarizer:
 
     def _initialize_client(self) -> None:
         """Create Anthropic client with API key."""
+        if not is_configured_secret(settings.anthropic_api_key):
+            self._client = None
+            logger.info("Anthropic summarizer disabled; no external API key configured")
+            return
         try:
             self._client = Anthropic(api_key=settings.anthropic_api_key)
             logger.info("Anthropic client initialized successfully")
@@ -31,6 +35,8 @@ class Summarizer:
         """Get the Anthropic client instance."""
         if self._client is None:
             self._initialize_client()
+        if self._client is None:
+            raise RuntimeError("Anthropic summarizer is disabled because no API key is configured")
         return self._client
 
     def summarize_text(

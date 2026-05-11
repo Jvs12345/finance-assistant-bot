@@ -4,6 +4,7 @@ import csv
 import uuid
 import io
 import zipfile
+import re
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, Any, List
@@ -12,7 +13,7 @@ from bs4 import BeautifulSoup
 import anthropic
 
 from src.models.document import ProcessingStatus, DocumentCategory
-from src.config import settings
+from src.config import settings, is_configured_secret
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -23,11 +24,12 @@ class MultiFormatProcessor:
 
     def __init__(self):
         """Initialize processor."""
-        try:
-            self.anthropic_client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-        except Exception as e:
-            logger.warning(f"Failed to initialize Anthropic client: {e}")
-            self.anthropic_client = None
+        self.anthropic_client = None
+        if is_configured_secret(settings.anthropic_api_key):
+            try:
+                self.anthropic_client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+            except Exception as e:
+                logger.warning(f"Failed to initialize Anthropic client: {e}")
 
     def detect_file_type(self, file_path: Path) -> str:
         """
@@ -690,13 +692,79 @@ class MultiFormatProcessor:
         text_parts = [header, ""]
         for elem in root.iter():
             tag_name = elem.tag.split('}')[-1]
+            human_tag = self._humanize_xml_tag(tag_name)
             text_value = (elem.text or "").strip()
             if text_value:
                 text_parts.append(f"{tag_name}: {text_value}")
+                if human_tag != tag_name:
+                    text_parts.append(f"{human_tag}: {text_value}")
+                alias_terms = self._xml_alias_terms(tag_name)
+                if alias_terms:
+                    text_parts.append(f"{tag_name} aliases: {', '.join(alias_terms)}")
+                    text_parts.append(f"{human_tag} aliases: {', '.join(alias_terms)}")
             if elem.attrib:
                 for key, value in elem.attrib.items():
+                    attr_human = self._humanize_xml_tag(key)
                     text_parts.append(f"{tag_name}.@{key}: {value}")
+                    if attr_human != key:
+                        text_parts.append(f"{tag_name}.@{attr_human}: {value}")
         return "\n".join(text_parts)
+
+    def _humanize_xml_tag(self, tag_name: str) -> str:
+        """Make camelCase/XML tags searchable in natural-language queries."""
+        if not tag_name:
+            return ""
+        normalized = tag_name.replace("-", " ").replace("_", " ")
+        normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", normalized)
+        normalized = re.sub(r"\s+", " ", normalized).strip().lower()
+        return normalized
+
+    def _xml_alias_terms(self, tag_name: str) -> List[str]:
+        """Add high-value synonyms for financial/XAF fields."""
+        key = (tag_name or "").lower()
+        aliases = {
+            "taxregident": [
+                "btw nummer",
+                "btw-nummer",
+                "vat number",
+                "vat registration number",
+                "tax registration number",
+            ],
+            "companyname": [
+                "bedrijfsnaam",
+                "company name",
+                "ondernemingsnaam",
+            ],
+            "fiscalyear": [
+                "boekjaar",
+                "fiscal year",
+                "reporting year",
+            ],
+            "startdate": [
+                "startdatum",
+                "periode start",
+                "period start",
+            ],
+            "enddate": [
+                "einddatum",
+                "periode einde",
+                "period end",
+            ],
+            "curcode": [
+                "currency",
+                "valuta",
+                "munteenheid",
+            ],
+            "ledgeraccountname": [
+                "grootboekrekening naam",
+                "ledger account name",
+            ],
+            "ledgeraccountid": [
+                "grootboekrekening nummer",
+                "ledger account id",
+            ],
+        }
+        return aliases.get(key, [])
 
     def generate_summary(self, content: str, file_name: str) -> str:
         """
@@ -710,7 +778,7 @@ class MultiFormatProcessor:
         Returns:
             str: AI-generated summary or simple excerpt
         """
-        if not settings.anthropic_api_key or settings.anthropic_api_key.startswith('dummy'):
+        if not is_configured_secret(settings.anthropic_api_key) or self.anthropic_client is None:
             excerpt = content[:500] + "..." if len(content) > 500 else content
             logger.debug(f"Using excerpt for {file_name} (no AI key)")
             return excerpt
