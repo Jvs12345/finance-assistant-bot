@@ -8,6 +8,9 @@ from text using various embedding models/APIs.
 from typing import List, Optional
 import os
 from enum import Enum
+import re
+import math
+import hashlib
 
 import anthropic
 import requests
@@ -106,7 +109,11 @@ class EmbeddingService:
         elif self.provider == EmbeddingProvider.ANTHROPIC:
             return self._get_anthropic_embedding(text)
         elif self.provider == EmbeddingProvider.LOCAL:
-            return self._get_local_embedding(text)
+            try:
+                return self._get_local_embedding(text)
+            except Exception as e:
+                logger.warning(f"Local embedding unavailable, using deterministic fallback embedding: {e}")
+                return self._get_hash_embedding(text)
         elif self.provider == EmbeddingProvider.OLLAMA:
             return self._get_ollama_embedding(text)
         else:
@@ -134,8 +141,7 @@ class EmbeddingService:
                 embeddings.append(embedding)
             except Exception as e:
                 logger.error(f"Failed to embed text: {e}")
-                # Return zero vector on failure
-                embeddings.append([0.0] * self.dimension)
+                embeddings.append(self._get_hash_embedding(text))
 
         return embeddings
 
@@ -279,6 +285,23 @@ class EmbeddingService:
             )
         except Exception as e:
             raise RuntimeError(f"Local embedding failed: {e}") from e
+
+    def _get_hash_embedding(self, text: str) -> List[float]:
+        """Deterministic lightweight fallback embedding when model backends fail."""
+        dim = max(1, int(self.dimension))
+        vec = [0.0] * dim
+        tokens = re.findall(r"\w+", (text or "").lower())
+        for tok in tokens:
+            digest = hashlib.sha1(tok.encode("utf-8", errors="ignore")).digest()
+            idx = int.from_bytes(digest[:4], "big") % dim
+            sign = -1.0 if (digest[4] & 1) else 1.0
+            vec[idx] += sign
+
+        norm = math.sqrt(sum(v * v for v in vec))
+        if norm <= 0:
+            vec[0] = 1e-12
+            return vec
+        return [v / norm for v in vec]
 
 
 # Global singleton

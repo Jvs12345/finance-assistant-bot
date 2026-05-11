@@ -1,4 +1,4 @@
-"""Llama/Ollama service for financial document Q&A."""
+﻿"""Llama/Ollama service for financial document Q&A."""
 
 from typing import Dict, Any, List, Optional, Tuple
 import re
@@ -17,7 +17,7 @@ from src.config import settings
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
-SERVICE_VERSION = 6
+SERVICE_VERSION = 8
 
 
 class LlamaService:
@@ -49,11 +49,19 @@ class LlamaService:
         "2. Show source references for claims.\n"
         "3. Keep evidence separate from interpretation.\n"
         "4. If information is missing, say that clearly.\n"
-        "5. Do not provide final certified accounting, tax, legal, or insurance advice.\n"
+        "5. Do not present final certified accounting, tax, legal, or insurance advice.\n"
         "6. Include practical next steps.\n"
         "7. If the user asks in Dutch, answer in natural professional Dutch.\n"
+        "8. If the user asks to summarize/extract from documents, provide an informational summary "
+        "based on the retrieved text instead of refusing.\n"
     )
     INTENT_RETRIEVAL_TERMS = {
+        "document_summary": [
+            "summary", "purpose", "overview", "main sections", "obligations", "risks",
+            "requirements", "conclusion", "introduction", "table of contents",
+            "samenvatting", "doel", "inhoud", "hoofdonderdelen", "verplichtingen",
+            "aandachtspunten", "risico", "conclusie", "introductie",
+        ],
         "missing_info_check": [
             "jaarrekening", "annual accounts", "balance sheet", "balans", "profit and loss",
             "winst-en-verliesrekening", "btw", "btw-overzicht", "bank", "invoice", "factuur",
@@ -79,17 +87,91 @@ class LlamaService:
             "financial statements", "winst-en-verliesrekening", "balans", "tax", "vat", "btw",
             "klantnotities", "contract", "insurance", "verzekering", "cash flow", "liquiditeit",
         ],
+        "technical_requirements_check": [
+            "technical requirements", "technische eisen", "verplichtingen", "responsibilities",
+            "procedure", "steps", "systems", "components", "work permit", "veiligheidsinstructie",
+        ],
+        "risk_attention_check": [
+            "risk", "risico", "hazard", "aandachtspunten", "incident", "near miss",
+            "mitigation", "maatregelen", "safety controls",
+        ],
+        "ce_compliance_gap_check": [
+            "ce", "ce-documentatie", "conformity", "conformiteit", "technical file",
+            "technisch dossier", "risk assessment", "risicobeoordeling", "standards", "normen",
+            "declaration of conformity", "verklaring van overeenstemming",
+        ],
+        "document_governance_check": [
+            "metadata", "owner", "eigenaar", "revision", "revisie", "version", "versie", "status",
+            "audit trail", "audit-proof", "tegenstrijdige instructies", "duplicated instructions",
+            "standards without version", "normen zonder versie", "ocr noise", "ocr-ruis",
+            "confidential", "vertrouwelijk", "change proposal", "wijzigingsvoorstel",
+        ],
+        "quotation_preparation": [
+            "offerte", "quotation", "scope", "deliverables", "planning", "doorlooptijd",
+            "randvoorwaarden", "acceptatiecriteria", "prijs", "kosten", "klantvraag",
+        ],
+        "ai_use_case_identification": [
+            "ai use case", "ai-use-case", "repeterende taken", "documentintensief",
+            "knowledge retrieval", "compliance check", "workflow automation",
+        ],
+        "use_case_prioritization": [
+            "impact", "haalbaarheid", "feasibility", "databeschikbaarheid", "data availability",
+            "prioriteren", "pilot value",
+        ],
+        "pilot_project_translation": [
+            "pilotproject", "studententeam", "20 weken", "prototype", "stakeholders",
+            "deliverables", "success metrics", "probleemdefinitie",
+        ],
+        "local_privacy_explanation": [
+            "lokale ai", "local ai", "privacy", "data security", "on-premise", "on premise",
+            "chatgpt", "claude", "documenten lokaal",
+        ],
     }
     WORKFLOW_INTENTS = {
+        "document_summary",
         "missing_info_check",
         "inconsistency_check",
         "advisory_points",
         "insurance_risk_check",
         "client_file_summary",
+        "technical_requirements_check",
+        "risk_attention_check",
+        "ce_compliance_gap_check",
+        "document_governance_check",
+        "quotation_preparation",
+        "ai_use_case_identification",
+        "use_case_prioritization",
+        "pilot_project_translation",
+        "local_privacy_explanation",
+    }
+    SUMMARY_HEADING_TERMS = [
+        "inhoud", "contents", "section", "sectie", "hoofdstuk", "chapter",
+        "introduction", "introductie", "conclusion", "conclusie",
+        "appendix", "bijlage", "scope", "purpose", "doel", "overview", "samenvatting",
+    ]
+    SUMMARY_REQUIREMENT_TERMS = [
+        "must", "shall", "required", "requirement", "obligation", "risk", "mitigation", "action",
+        "moet", "dient", "verplicht", "verplichting", "risico", "maatregel", "actie", "controle",
+    ]
+    SUMMARY_SAFETY_TERMS = [
+        "veilig", "veiligheid", "gezondheid", "incident", "pbm", "ppe", "helm",
+        "gehoorbescherming", "risicoanalyse", "work permit", "werkvergunning",
+    ]
+    SUMMARY_TERM_NORMALIZATION_MAP = {
+        "V&G-plan": "veiligheids- en gezondheidsplan",
+        "VGM": "veiligheid, gezondheid en milieu",
+    }
+    SUMMARY_DUTCH_CHAR_FIXES = {
+        "geÄ«mplementeerd": "geïmplementeerd",
+        "GeÄ«mplementeerd": "Geïmplementeerd",
+        "geiÌˆmplementeerd": "geïmplementeerd",
+        "geīmplementeerd": "geïmplementeerd",
+        "Geīmplementeerd": "Geïmplementeerd",
     }
     TICKER_STOPWORDS = {
         "MKB", "SME", "BV", "NV", "ZZP", "BTW", "VAT", "KPI", "AI", "API",
         "P", "L", "IB", "VPB", "EU", "NL", "PDF", "OCR", "IFRS", "GAAP",
+        "CEO", "CFO", "COO", "CTO", "CIO", "CPO",
     }
     CLIENT_DOC_HINTS = [
         "winst", "verlies", "balans", "btw", "klantnotities", "contract", "polis",
@@ -145,7 +227,7 @@ class LlamaService:
             "key": "inventory_value",
             "label": "Voorraadwaarde",
             "terms": ["voorraad", "inventory", "stock", "inventaris"],
-            "why": "De voorraadwaardering beïnvloedt zowel het resultaat als de balans.",
+            "why": "De voorraadwaardering beÃ¯nvloedt zowel het resultaat als de balans.",
             "next_step": "Vraag een voorraadopstelling met waarderingsmethode en peildatum op.",
         },
         {
@@ -173,14 +255,14 @@ class LlamaService:
             "key": "contract_details",
             "label": "Contractdetails",
             "terms": ["contract", "overeenkomst", "service agreement", "payment terms", "betaaltermijn"],
-            "why": "Contractvoorwaarden helpen om omzetmomenten, verplichtingen en risico’s te onderbouwen.",
+            "why": "Contractvoorwaarden helpen om omzetmomenten, verplichtingen en risicoâ€™s te onderbouwen.",
             "next_step": "Controleer contracten op looptijd, prijsafspraken, en verplichtingen.",
         },
         {
             "key": "insurance_coverage",
             "label": "Verzekeringsinformatie",
             "terms": ["verzekering", "polis", "coverage", "insured amount", "aansprakelijkheid"],
-            "why": "Verzekeringsinformatie is relevant voor risicobeoordeling en continuïteit.",
+            "why": "Verzekeringsinformatie is relevant voor risicobeoordeling en continuÃ¯teit.",
             "next_step": "Vraag polisvoorwaarden en dekking per risicocategorie op.",
         },
     ]
@@ -204,6 +286,33 @@ class LlamaService:
             "bedrijfsmiddelen", "contract", "aansprakelijkheid", "cyber", "klantdata",
             "transport", "onderverzekering",
         ],
+        "technical_requirements_check": [
+            "eis", "vereiste", "verplicht", "moet", "dient", "procedure", "stap", "instructie",
+            "norm", "richtlijn", "werkvergunning", "systeem", "component", "constructie",
+        ],
+        "risk_attention_check": [
+            "risico", "gevaar", "incident", "bijna-ongeval", "aandachtspunt", "beheersmaatregel",
+            "verboden", "waarschuwing", "veiligheid",
+        ],
+        "ce_compliance_gap_check": [
+            "ce", "conformiteit", "technisch dossier", "risicobeoordeling",
+            "verklaring van overeenstemming", "norm", "richtlijn", "testverslag",
+        ],
+        "document_governance_check": [
+            "revisie", "versie", "version", "status", "eigenaar", "owner", "datum",
+            "norm", "richtlijn", "confidential", "vertrouwelijk", "verboden", "toegestaan",
+            "ocr", "scan", "bijlage", "audit",
+        ],
+        "quotation_preparation": [
+            "offerte", "scope", "klantvraag", "eis", "levering", "planning",
+            "randvoorwaarde", "prijs", "doorlooptijd", "acceptatie",
+        ],
+    }
+    GENERIC_STOPWORDS_NL = {
+        "de", "het", "een", "en", "van", "in", "op", "voor", "met", "te", "tot", "dat", "dit",
+        "die", "is", "zijn", "wordt", "werd", "aan", "als", "bij", "door", "uit", "om", "naar",
+        "of", "niet", "nog", "dan", "ook", "maar", "kan", "kunnen", "moet", "dient", "zal",
+        "document", "bestaat", "staan", "worden",
     }
 
     def __init__(self, model: str = "llama3.2"):
@@ -258,6 +367,9 @@ class LlamaService:
 
             def finalize(payload: Dict[str, Any]) -> Dict[str, Any]:
                 answer_text = payload.get("answer")
+                if isinstance(answer_text, str):
+                    payload["answer"] = self._repair_text_artifacts(answer_text)
+                    answer_text = payload["answer"]
                 if isinstance(answer_text, str) and payload.get("found_documents", False):
                     verification = self.verification_service.verify(
                         question=question,
@@ -298,8 +410,10 @@ class LlamaService:
                     )
                 return payload
 
+            effective_corpus_type = corpus_type if corpus_type in {"uploaded", "existing"} else "uploaded"
+
             filters_used = {
-                "corpus_type": corpus_type,
+                "corpus_type": effective_corpus_type,
                 "document_type": document_type,
                 "jurisdiction": jurisdiction,
                 "tax_year": tax_year,
@@ -309,6 +423,18 @@ class LlamaService:
             }
             retrieval_query = self._build_intent_retrieval_query(question, detected_intent)
             retrieval_limit = max(1, min(max_context_docs or self.retrieval_top_k, 20))
+            if detected_intent in {
+                "document_summary",
+                "technical_requirements_check",
+                "risk_attention_check",
+                "ce_compliance_gap_check",
+                "document_governance_check",
+                "quotation_preparation",
+                "ai_use_case_identification",
+                "use_case_prioritization",
+                "pilot_project_translation",
+            }:
+                retrieval_limit = max(retrieval_limit, 18)
 
             retrieval_started = perf_counter()
             search_results = self._retrieve_with_intent_strategy(
@@ -321,7 +447,7 @@ class LlamaService:
                 entity_type=entity_type,
                 client_name=client_name,
                 document_type=document_type,
-                corpus_type=corpus_type,
+                corpus_type=effective_corpus_type,
             )
             timing["retrieval_ms"] = (perf_counter() - retrieval_started) * 1000
 
@@ -426,7 +552,28 @@ class LlamaService:
                     "filters_used": filters_used,
                     "warnings": consistency_notes,
                 })
-            if detected_intent in {"inconsistency_check", "advisory_points", "insurance_risk_check", "client_file_summary"}:
+            if detected_intent == "document_summary":
+                if self._is_summary_question(question):
+                    warnings = list(consistency_notes)
+                else:
+                    warnings = list(consistency_notes) + [
+                        "Vraag lijkt niet eenduidig als samenvatting geformuleerd; document-summary workflow toegepast."
+                    ]
+                consistency_notes = warnings
+            if detected_intent in {
+                "inconsistency_check",
+                "advisory_points",
+                "insurance_risk_check",
+                "client_file_summary",
+                "technical_requirements_check",
+                "risk_attention_check",
+                "ce_compliance_gap_check",
+                "quotation_preparation",
+                "ai_use_case_identification",
+                "use_case_prioritization",
+                "pilot_project_translation",
+                "local_privacy_explanation",
+            }:
                 workflow_answer = self._build_workflow_answer(detected_intent, search_results, question=question)
                 return finalize({
                     "answer": workflow_answer,
@@ -438,61 +585,72 @@ class LlamaService:
                     "warnings": consistency_notes,
                 })
 
-            formula_started = perf_counter()
-            formula_calc = self._try_formula_registry_calculation(
-                question=question,
-                base_results=search_results,
-                corpus_type=corpus_type,
-                jurisdiction=jurisdiction,
-                tax_year=tax_year,
-                entity_type=entity_type,
-                client_name=client_name,
-                document_type=document_type,
-            )
-            timing["formula_ms"] = (perf_counter() - formula_started) * 1000
-            if formula_calc:
-                return finalize({
-                    "answer": formula_calc["answer"],
-                    "sources": formula_calc["sources"],
-                    "model": self.model,
-                    "found_documents": True,
-                    "num_documents_used": len(search_results),
-                    "filters_used": filters_used,
-                    "warnings": consistency_notes + formula_calc.get("warnings", []),
-                })
+            if detected_intent != "document_summary":
+                formula_started = perf_counter()
+                formula_calc = self._try_formula_registry_calculation(
+                    question=question,
+                    base_results=search_results,
+                    corpus_type=corpus_type,
+                    jurisdiction=jurisdiction,
+                    tax_year=tax_year,
+                    entity_type=entity_type,
+                    client_name=client_name,
+                    document_type=document_type,
+                )
+                timing["formula_ms"] = (perf_counter() - formula_started) * 1000
+                if formula_calc:
+                    return finalize({
+                        "answer": formula_calc["answer"],
+                        "sources": formula_calc["sources"],
+                        "model": self.model,
+                        "found_documents": True,
+                        "num_documents_used": len(search_results),
+                        "filters_used": filters_used,
+                        "warnings": consistency_notes + formula_calc.get("warnings", []),
+                    })
 
-            direct_calc_answer = self._try_direct_financial_calculation(question, search_results)
-            if direct_calc_answer:
-                return finalize({
-                    "answer": direct_calc_answer,
-                    "sources": self._format_sources(search_results, list(range(min(3, len(search_results))))),
-                    "model": self.model,
-                    "found_documents": True,
-                    "num_documents_used": len(search_results),
-                    "filters_used": filters_used,
-                })
+                direct_calc_answer = self._try_direct_financial_calculation(question, search_results)
+                if direct_calc_answer:
+                    return finalize({
+                        "answer": direct_calc_answer,
+                        "sources": self._format_sources(search_results, list(range(min(3, len(search_results))))),
+                        "model": self.model,
+                        "found_documents": True,
+                        "num_documents_used": len(search_results),
+                        "filters_used": filters_used,
+                    })
 
-            direct_numeric_answer = self._try_direct_numeric_answer(question, search_results)
-            if direct_numeric_answer:
-                return finalize({
-                    "answer": direct_numeric_answer,
-                    "sources": self._format_sources(search_results, list(range(min(3, len(search_results))))),
-                    "model": self.model,
-                    "found_documents": True,
-                    "num_documents_used": len(search_results),
-                    "filters_used": filters_used,
-                })
+                direct_numeric_answer = self._try_direct_numeric_answer(question, search_results)
+                if direct_numeric_answer:
+                    return finalize({
+                        "answer": direct_numeric_answer,
+                        "sources": self._format_sources(search_results, list(range(min(3, len(search_results))))),
+                        "model": self.model,
+                        "found_documents": True,
+                        "num_documents_used": len(search_results),
+                        "filters_used": filters_used,
+                    })
 
             llm_started = perf_counter()
             prompt_started = perf_counter()
-            context_results = search_results[: self.final_context_chunks]
-            context = self._build_context(context_results)
-            prompt = self._create_prompt(
-                question=question,
-                context=context,
-                history=history,
-                intent=detected_intent,
-            )
+            if detected_intent == "document_summary":
+                context_results = search_results[: min(len(search_results), max(14, self.final_context_chunks))]
+                context, context_noise_ratio = self._build_document_summary_context(context_results)
+                prompt = self._create_document_summary_prompt(
+                    question=question,
+                    context=context,
+                    history=history,
+                    noisy_context=context_noise_ratio >= 0.28,
+                )
+            else:
+                context_results = search_results[: self.final_context_chunks]
+                context = self._build_context(context_results)
+                prompt = self._create_prompt(
+                    question=question,
+                    context=context,
+                    history=history,
+                    intent=detected_intent,
+                )
             timing["prompt_ms"] = (perf_counter() - prompt_started) * 1000
 
             ollama_started = perf_counter()
@@ -507,6 +665,13 @@ class LlamaService:
                 question=question,
             )
             answer = self._sanitize_missing_info_section(answer, consistency_notes)
+            if detected_intent == "document_summary":
+                answer = self._post_process_document_summary_answer(
+                    answer=answer,
+                    question=question,
+                    noisy_context=(context_noise_ratio >= 0.28),
+                    search_results=context_results,
+                )
             timing["post_ms"] = (perf_counter() - post_started) * 1000
             timing["llm_ms"] = (perf_counter() - llm_started) * 1000
 
@@ -592,6 +757,19 @@ class LlamaService:
                 xaf_only = self._deduplicate_results(xaf_rows, limit=None)
                 return self._prioritize_xaf_results_for_question(xaf_only, question)[:retrieval_limit]
 
+        if detected_intent == "document_summary":
+            return self._retrieve_document_summary_results(
+                question=question,
+                retrieval_limit=retrieval_limit,
+                system_context=system_context,
+                jurisdiction=jurisdiction,
+                tax_year=tax_year,
+                entity_type=entity_type,
+                client_name=client_name,
+                document_type=document_type,
+                corpus_type=corpus_type,
+            )
+
         if detected_intent not in self.WORKFLOW_INTENTS:
             rows = self.es_client.search(
                 query=question,
@@ -621,37 +799,236 @@ class LlamaService:
             corpus_type=corpus_type,
             use_vector=True,
         )
-        uploaded_rows = self.es_client.search(
-            query=question,
-            limit=retrieval_limit,
-            enable_fuzzy=True,
-            system_context=system_context,
-            jurisdiction=jurisdiction,
-            tax_year=tax_year,
-            entity_type=entity_type,
-            client_name=client_name,
-            document_type=document_type,
-            corpus_type="uploaded",
-            use_vector=True,
-        )
-        existing_rows = self.es_client.search(
-            query=question,
-            limit=max(3, retrieval_limit // 2),
-            enable_fuzzy=True,
-            system_context=system_context,
-            jurisdiction=jurisdiction,
-            tax_year=tax_year,
-            entity_type=entity_type,
-            client_name=client_name,
-            document_type=document_type,
-            corpus_type="existing",
-            use_vector=True,
-        )
+        uploaded_rows: List[Dict[str, Any]] = []
+        existing_rows: List[Dict[str, Any]] = []
+        if corpus_type in (None, "uploaded"):
+            uploaded_rows = self.es_client.search(
+                query=question,
+                limit=retrieval_limit,
+                enable_fuzzy=True,
+                system_context=system_context,
+                jurisdiction=jurisdiction,
+                tax_year=tax_year,
+                entity_type=entity_type,
+                client_name=client_name,
+                document_type=document_type,
+                corpus_type="uploaded",
+                use_vector=True,
+            )
+        if corpus_type == "existing":
+            existing_rows = self.es_client.search(
+                query=question,
+                limit=max(3, retrieval_limit // 2),
+                enable_fuzzy=True,
+                system_context=system_context,
+                jurisdiction=jurisdiction,
+                tax_year=tax_year,
+                entity_type=entity_type,
+                client_name=client_name,
+                document_type=document_type,
+                corpus_type="existing",
+                use_vector=True,
+            )
 
         merged_inputs = uploaded_rows + base_rows + existing_rows
         merged = self._deduplicate_results(merged_inputs, limit=None)
         prioritized = self._prioritize_advisor_results(merged)
         return prioritized[:retrieval_limit]
+
+    def _build_document_summary_queries(self, question: str) -> List[str]:
+        q = (question or "").strip()
+        generic_nl = (
+            "samenvatting doel inhoud hoofdonderdelen verplichtingen "
+            "aandachtspunten risico conclusie introductie"
+        )
+        generic_en = (
+            "summary purpose overview main sections obligations "
+            "requirements risks conclusion introduction"
+        )
+        return [
+            q,
+            f"{q} {generic_nl}",
+            f"{q} {generic_en}",
+            generic_nl,
+            generic_en,
+        ]
+
+    def _retrieve_document_summary_results(
+        self,
+        question: str,
+        retrieval_limit: int,
+        system_context: Optional[str],
+        jurisdiction: Optional[str],
+        tax_year: Optional[int],
+        entity_type: Optional[str],
+        client_name: Optional[str],
+        document_type: Optional[str],
+        corpus_type: Optional[str],
+    ) -> List[Dict[str, Any]]:
+        queries = self._build_document_summary_queries(question)
+        merged_rows: List[Dict[str, Any]] = []
+        per_query_limit = max(retrieval_limit, 14)
+
+        for i, q in enumerate(queries):
+            if not q:
+                continue
+            rows = self.es_client.search(
+                query=q,
+                limit=per_query_limit,
+                enable_fuzzy=True,
+                system_context=system_context,
+                jurisdiction=jurisdiction,
+                tax_year=tax_year,
+                entity_type=entity_type,
+                client_name=client_name,
+                document_type=document_type,
+                corpus_type=corpus_type,
+                use_vector=(i < 3),
+            )
+            merged_rows.extend(rows)
+
+        deduped = self._deduplicate_results(merged_rows, limit=None)
+        representative = self._select_representative_summary_rows(deduped, retrieval_limit=max(retrieval_limit, 16))
+        return representative[: max(retrieval_limit, 14)]
+
+    def _select_representative_summary_rows(
+        self,
+        rows: List[Dict[str, Any]],
+        retrieval_limit: int,
+    ) -> List[Dict[str, Any]]:
+        if not rows:
+            return []
+
+        scored = self._rank_summary_rows(rows)
+        if not scored:
+            return self._deduplicate_results(rows, limit=retrieval_limit)
+
+        filename_counts: Dict[str, int] = {}
+        for _, row in scored:
+            fname = str(row.get("filename", "")).strip()
+            if not fname:
+                continue
+            filename_counts[fname] = filename_counts.get(fname, 0) + 1
+        focus_filename = max(filename_counts, key=filename_counts.get) if filename_counts else ""
+        focus_rows = [pair for pair in scored if str(pair[1].get("filename", "")).strip() == focus_filename]
+        if len(focus_rows) >= 5:
+            scored = focus_rows + [pair for pair in scored if pair not in focus_rows]
+
+        heading_rows = [pair for pair in scored if self._has_heading_like_content(pair[1])]
+        requirement_rows = [
+            pair for pair in scored
+            if any(term in self._row_text(pair[1]) for term in self.SUMMARY_REQUIREMENT_TERMS)
+        ]
+
+        selected: List[Dict[str, Any]] = []
+        selected.extend([row for _, row in heading_rows[:4]])
+        selected.extend([row for _, row in requirement_rows[:4]])
+        selected.extend(self._select_summary_rows_by_page_ranges([row for _, row in scored], per_range=2))
+        selected.extend([row for _, row in scored[: max(6, retrieval_limit)]])
+
+        return self._deduplicate_summary_rows(selected, limit=retrieval_limit)
+
+    def _rank_summary_rows(self, rows: List[Dict[str, Any]]) -> List[Tuple[float, Dict[str, Any]]]:
+        scored: List[Tuple[float, Dict[str, Any]]] = []
+        for row in rows:
+            text = self._clean_summary_text(self._row_primary_text(row))
+            if len(text) < 60:
+                continue
+            score = float(row.get("score", 0.0) or 0.0)
+            info_density = min(3.0, len(set(re.findall(r"\w+", text.lower()))) / 60.0)
+            heading_boost = 1.8 if self._has_heading_like_content(row) else 0.0
+            req_hits = sum(1 for term in self.SUMMARY_REQUIREMENT_TERMS if term in text.lower())
+            req_boost = min(2.0, req_hits * 0.15)
+            noise_penalty = self._summary_text_noise_ratio(text) * 3.0
+            score = score + info_density + heading_boost + req_boost - noise_penalty
+            scored.append((score, row))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return scored
+
+    def _select_summary_rows_by_page_ranges(self, rows: List[Dict[str, Any]], per_range: int = 2) -> List[Dict[str, Any]]:
+        with_pages = [r for r in rows if isinstance(r.get("page_number"), int)]
+        if len(with_pages) < 4:
+            return with_pages[: max(3, per_range * 2)]
+
+        max_page = max(int(r.get("page_number")) for r in with_pages)
+        if max_page <= 1:
+            return with_pages[: max(3, per_range * 2)]
+
+        early: List[Dict[str, Any]] = []
+        middle: List[Dict[str, Any]] = []
+        late: List[Dict[str, Any]] = []
+
+        for row in with_pages:
+            p = int(row.get("page_number"))
+            ratio = p / max_page
+            if ratio <= 0.33:
+                early.append(row)
+            elif ratio <= 0.66:
+                middle.append(row)
+            else:
+                late.append(row)
+
+        selected = early[:per_range] + middle[:per_range] + late[:per_range]
+        return selected
+
+    def _deduplicate_summary_rows(self, rows: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        seen_page = set()
+        seen_signature = set()
+
+        for row in rows:
+            page_key = (row.get("filename"), row.get("page_number"), row.get("chunk_index"))
+            if page_key in seen_page:
+                continue
+            text = self._clean_summary_text(self._row_primary_text(row))
+            signature = " ".join(re.findall(r"\w+", text.lower())[:20])
+            if not signature:
+                continue
+            if signature in seen_signature:
+                continue
+            seen_page.add(page_key)
+            seen_signature.add(signature)
+            out.append(row)
+            if len(out) >= limit:
+                break
+        return out
+
+    def _has_heading_like_content(self, row: Dict[str, Any]) -> bool:
+        title = str(row.get("title", "") or "")
+        content = self._clean_summary_text(self._row_primary_text(row))[:500]
+        text = f"{title} {content}".lower()
+        if any(term in text for term in self.SUMMARY_HEADING_TERMS):
+            return True
+        return bool(re.search(r"\b\d+(\.\d+){1,3}\b", text))
+
+    def _summary_text_noise_ratio(self, text: str) -> float:
+        if not text:
+            return 1.0
+        cleaned = text.strip()
+        allowed_punct = {".", ",", ";", ":", "!", "?", "-", "(", ")", "/", "%", "$", "€"}
+        bad = 0
+        for ch in cleaned:
+            if ch.isalnum() or ch.isspace() or ch in allowed_punct:
+                continue
+            bad += 1
+        return bad / max(1, len(cleaned))
+
+    def _clean_summary_text(self, text: str) -> str:
+        cleaned = str(text or "")
+        cleaned = re.sub(r"[\uFFFD]+", " ", cleaned)
+        cleaned = re.sub(r"[|_=*~`]{2,}", " ", cleaned)
+        cleaned = re.sub(r"[^\w\s\.,;:!\?\-\(\)\/%â‚¬$]", " ", cleaned)
+        cleaned = re.sub(r"\bpage\s+\d+\b", " ", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\bpagina\s+\d+\b", " ", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+
+        words = re.findall(r"\w+", cleaned)
+        if len(words) < 6:
+            return ""
+        alpha = sum(1 for ch in cleaned if ch.isalpha())
+        if alpha / max(1, len(cleaned)) < 0.45:
+            return ""
+        return cleaned
 
     def _is_xaf_focused_question(self, question: str) -> bool:
         q = (question or "").lower()
@@ -842,7 +1219,7 @@ class LlamaService:
                 score += 1.5
 
             if wants_numbers:
-                numeric_hits = re.findall(r"(?:€|\$)?\s*\(?\d[\d\.,]*\)?", text_blob)
+                numeric_hits = re.findall(r"(?:â‚¬|\$)?\s*\(?\d[\d\.,]*\)?", text_blob)
                 score += min(3.0, len(numeric_hits) * 0.03)
 
             rescored.append((score, row))
@@ -865,7 +1242,7 @@ class LlamaService:
                 "3. Important assumptions or missing information\n"
                 "Dit oordeel is gebaseerd op de huidige zoekresultaten.\n\n"
                 "4. Suggested next step\n"
-                "Controleer of .xaf-bestanden zijn geïndexeerd en vraag daarna opnieuw."
+                "Controleer of .xaf-bestanden zijn geÃ¯ndexeerd en vraag daarna opnieuw."
             )
 
         filenames = sorted({str(r.get("filename", "Unknown")) for r in xaf_rows})
@@ -984,7 +1361,7 @@ class LlamaService:
             f"Hier zijn {len(extracted)} bedragen/waarden uit de XAF-bronnen:\n"
             + "\n".join(lines)
             + "\n\n2. Evidence from documents\n"
-            "De waarden zijn direct geëxtraheerd uit opgehaalde XAF-chunks op basis van veldnamen.\n\n"
+            "De waarden zijn direct geÃ«xtraheerd uit opgehaalde XAF-chunks op basis van veldnamen.\n\n"
             "3. Important assumptions or missing information\n"
             "De lijst is beperkt tot de huidige retrievalset en gevraagde labels.\n\n"
             "4. Suggested next step\n"
@@ -1097,7 +1474,7 @@ class LlamaService:
         if self._is_calc_intent_fast(question):
             formula_hints = self.formula_registry.render_prompt_hints(question, max_results=4)
         formula_hints_block = f"\n{formula_hints}\n" if formula_hints else ""
-        workflow_output = self._workflow_output_format(intent)
+        workflow_output = self._workflow_output_format(intent, question=question)
 
         return (
             "You are a financial document assistant. You help users understand tax law, accounting documents, "
@@ -1110,7 +1487,7 @@ class LlamaService:
             "Answer:"
         )
 
-    def _workflow_output_format(self, intent: str) -> str:
+    def _workflow_output_format(self, intent: str, question: Optional[str] = None) -> str:
         if intent == "missing_info_check":
             return (
                 "Kort antwoord:\n"
@@ -1168,7 +1545,7 @@ class LlamaService:
             return (
                 "Kort antwoord:\n"
                 "[korte samenvatting]\n\n"
-                "Mogelijke verzekeringsrisico’s:\n"
+                "Mogelijke verzekeringsrisicoâ€™s:\n"
                 "1. [risico]\n"
                 "   - Bewijs:\n"
                 "   - Waarom dit belangrijk is:\n"
@@ -1187,11 +1564,11 @@ class LlamaService:
                 "Samenvatting klantdossier:\n\n"
                 "Bedrijfsactiviteit:\n"
                 "[samenvatting]\n\n"
-                "Financiële punten:\n"
+                "FinanciÃ«le punten:\n"
                 "- [punt]\n\n"
                 "Belasting-/btw-punten:\n"
                 "- [punt]\n\n"
-                "Risico’s of aandachtspunten:\n"
+                "Risicoâ€™s of aandachtspunten:\n"
                 "- [punt]\n\n"
                 "Ontbrekende informatie:\n"
                 "- [punt]\n\n"
@@ -1200,12 +1577,629 @@ class LlamaService:
                 "Bronnen:\n"
                 "[bronnenlijst]"
             )
+        if intent == "technical_requirements_check":
+            return (
+                "Kort antwoord:\n"
+                "[korte samenvatting van technische eisen en verplichtingen]\n\n"
+                "Gevonden informatie:\n"
+                "- [eis/verplichting], bron: [document/pagina]\n\n"
+                "Aandachtspunten of ontbrekende informatie:\n"
+                "- [onduidelijk punt]\n\n"
+                "Mogelijke vervolgstap:\n"
+                "[concrete controle- of opvolgstap]"
+            )
+        if intent == "risk_attention_check":
+            return (
+                "Kort antwoord:\n"
+                "[korte samenvatting van risicoâ€™s en aandachtspunten]\n\n"
+                "Gevonden informatie:\n"
+                "- [risico/aandachtspunt], bron: [document/pagina]\n\n"
+                "Aandachtspunten of ontbrekende informatie:\n"
+                "- [onduidelijk of niet onderbouwd risico]\n\n"
+                "Mogelijke vervolgstap:\n"
+                "[concrete beheersmaatregel of controle]"
+            )
+        if intent == "ce_compliance_gap_check":
+            return (
+                "Kort antwoord:\n"
+                "[korte samenvatting van CE-relevante bevindingen]\n\n"
+                "Gevonden informatie:\n"
+                "- [gevonden CE-eis/onderdeel], bron: [document/pagina]\n\n"
+                "Aandachtspunten of ontbrekende informatie:\n"
+                "- [ontbrekend CE-onderdeel of onderbouwing]\n\n"
+                "Mogelijke vervolgstap:\n"
+                "[welke CE-documentatie nu op te vragen of te valideren]"
+            )
+        if intent == "document_governance_check":
+            return (
+                "Kort antwoord:\n"
+                "[korte governance-samenvatting]\n\n"
+                "Gevonden informatie:\n"
+                "- [metadata/revisie/instructiebevinding], bron: [document/pagina]\n\n"
+                "Aandachtspunten of ontbrekende informatie:\n"
+                "- [ontbrekende metadata, mogelijke tegenstrijdigheid, OCR-ruis of vertrouwelijkheidsrisico]\n\n"
+                "Mogelijke vervolgstap:\n"
+                "[concrete beheeractie voor volgende revisie of audit]"
+            )
+        if intent == "quotation_preparation":
+            return (
+                "Kort antwoord:\n"
+                "[korte samenvatting van offerte-input]\n\n"
+                "Gevonden informatie:\n"
+                "- [beschikbare offerte-input], bron: [document/pagina]\n\n"
+                "Aandachtspunten of ontbrekende informatie:\n"
+                "- [ontbrekende scope/prijs/planning/randvoorwaarde]\n\n"
+                "Mogelijke vervolgstap:\n"
+                "[volgende stap om een betrouwbare eerste offerte op te stellen]"
+            )
+        if intent == "ai_use_case_identification":
+            return (
+                "Kort antwoord:\n"
+                "[korte samenvatting van kansrijke AI-use-cases]\n\n"
+                "Gevonden informatie:\n"
+                "- [use-case + documentevidence]\n\n"
+                "Aandachtspunten of ontbrekende informatie:\n"
+                "- [beperking/data-gat]\n\n"
+                "Mogelijke vervolgstap:\n"
+                "[hoe deze use-cases te valideren in een pilot]"
+            )
+        if intent == "use_case_prioritization":
+            return (
+                "Kort antwoord:\n"
+                "[korte prioriteringsconclusie]\n\n"
+                "Gevonden informatie:\n"
+                "- [use-case score op impact/haalbaarheid/databeschikbaarheid]\n\n"
+                "Aandachtspunten of ontbrekende informatie:\n"
+                "- [aannames of data-onzekerheden]\n\n"
+                "Mogelijke vervolgstap:\n"
+                "[welke use-case eerst te testen en waarom]"
+            )
+        if intent == "pilot_project_translation":
+            return (
+                "Kort antwoord:\n"
+                "[korte pilotsamenvatting]\n\n"
+                "Gevonden informatie:\n"
+                "- [probleem, data, stakeholders, prototypekans]\n\n"
+                "Aandachtspunten of ontbrekende informatie:\n"
+                "- [risicoâ€™s/afhankelijkheden voor pilot]\n\n"
+                "Mogelijke vervolgstap:\n"
+                "[concrete startstap voor een 20-weken pilot]"
+            )
+        if intent == "local_privacy_explanation":
+            return (
+                "Kort antwoord:\n"
+                "[korte uitleg waarom lokaal relevant is]\n\n"
+                "Gevonden informatie:\n"
+                "- [lokale/verwerkingsgerelateerde bevinding]\n\n"
+                "Aandachtspunten of ontbrekende informatie:\n"
+                "- [beperking of noodzakelijke menselijke controle]\n\n"
+                "Mogelijke vervolgstap:\n"
+                "[welke governance/controlemaatregel nu te borgen]"
+            )
+        if intent == "document_summary":
+            if self._is_dutch_question(question or ""):
+                return (
+                    "Kort antwoord:\n"
+                    "[2-4 zinnen over waar het document over gaat]\n\n"
+                    "Belangrijkste onderdelen:\n"
+                    "- [onderdeel 1]\n"
+                    "- [onderdeel 2]\n"
+                    "- [onderdeel 3]\n"
+                    "- [onderdeel 4]\n\n"
+                    "Belangrijke verplichtingen of aandachtspunten:\n"
+                    "- [verplichting/aandachtspunt]\n"
+                    "- [verplichting/aandachtspunt]\n\n"
+                    "Mogelijke acties voor de gebruiker:\n"
+                    "- [actie]\n"
+                    "- [actie]"
+                )
+            return (
+                "Short answer:\n"
+                "[2-4 sentence overview of what the document is about]\n\n"
+                "Main sections:\n"
+                "- [section 1]\n"
+                "- [section 2]\n"
+                "- [section 3]\n"
+                "- [section 4]\n\n"
+                "Key obligations or attention points:\n"
+                "- [obligation/attention point]\n"
+                "- [obligation/attention point]\n\n"
+                "Possible next actions:\n"
+                "- [action]\n"
+                "- [action]"
+            )
+        if self._is_dutch_question(question or ""):
+            return (
+                "Kort antwoord:\n"
+                "[kort antwoord]\n\n"
+                "Gevonden informatie:\n"
+                "- [bewijs uit document]\n\n"
+                "Aandachtspunten of ontbrekende informatie:\n"
+                "- [onzekerheid of ontbrekende data]\n\n"
+                "Mogelijke vervolgstap:\n"
+                "[praktische volgende stap]"
+            )
         return (
             "1. Direct answer\n"
             "2. Evidence from documents\n"
             "3. Important assumptions or missing information\n"
             "4. Suggested next step"
         )
+
+    def _is_summary_question(self, question: str) -> bool:
+        q = self._normalize_question_text(question)
+        if not q:
+            return False
+        summary_terms = ["samenvat", "samenvatting", "summary", "summarise", "summarize", "overview", "overzicht", "vat"]
+        doc_terms = ["document", "bestand", "file", "pdf", "dossier"]
+        about_patterns = [
+            r"\bwaar gaat\b.*\b(document|bestand|file|pdf)\b.*\bover\b",
+            r"\bwat staat er in\b.*\b(document|bestand|file|pdf)\b",
+            r"\bwhat is\b.*\b(document|file|pdf)\b.*\babout\b",
+            r"\bvat\b.*\b(document|bestand|file|pdf)\b.*\bsamen\b",
+        ]
+        if any(re.search(p, q) for p in about_patterns):
+            return True
+        return any(t in q for t in summary_terms) and any(d in q for d in doc_terms)
+
+    def _normalize_question_text(self, question: str) -> str:
+        q = (question or "").lower()
+        q = re.sub(r"[^\w\s\-\?]", " ", q)
+        q = re.sub(r"\s+", " ", q).strip()
+        return q
+
+    def _is_dutch_question(self, question: str) -> bool:
+        q = (question or "").lower()
+        dutch_markers = [
+            "wat", "waar", "welke", "geef", "maak", "samenvatting", "vat", "samen",
+            "document", "bestand", "verplichtingen", "aandachtspunten",
+        ]
+        english_markers = ["what", "which", "give", "summarize", "summary", "document", "file"]
+        dutch_hits = sum(1 for m in dutch_markers if m in q)
+        english_hits = sum(1 for m in english_markers if m in q)
+        return dutch_hits >= english_hits
+
+    def _build_document_summary_context(self, search_results: List[Dict[str, Any]]) -> Tuple[str, float]:
+        context_parts: List[str] = []
+        used_chars = 0
+        noisy = 0
+        total = 0
+
+        for i, result in enumerate(search_results, 1):
+            filename = result.get("filename", "Unknown")
+            page_num = result.get("page_number")
+            chunk_index = result.get("chunk_index")
+            content = self._clean_summary_text(
+                (result.get("content") or "").strip()
+                or (result.get("summary") or "").strip()
+                or (result.get("snippet") or "").strip()
+            )
+            if not content:
+                continue
+            total += 1
+            if self._summary_text_noise_ratio(content) >= 0.22:
+                noisy += 1
+
+            if len(content) > self.max_chars_per_chunk:
+                content = content[: self.max_chars_per_chunk] + "..."
+
+            if page_num:
+                location = f"page {page_num}"
+            elif chunk_index:
+                location = f"chunk {chunk_index}"
+            else:
+                location = "page/chunk unknown"
+
+            context_block = (
+                f"--- Document {i} ---\n"
+                f"Source: {filename}\n"
+                f"Location: {location}\n"
+                f"Extract:\n{content}\n"
+            )
+            projected = used_chars + len(context_block)
+            if projected > self.max_context_chars:
+                remaining = self.max_context_chars - used_chars
+                if remaining < 350:
+                    break
+                context_parts.append(context_block[:remaining].rstrip() + "\n")
+                break
+            context_parts.append(context_block)
+            used_chars = projected
+
+        ratio = (noisy / total) if total else 0.0
+        return "\n".join(context_parts), ratio
+
+    def _create_document_summary_prompt(
+        self,
+        question: str,
+        context: str,
+        history: Optional[List[Dict[str, str]]] = None,
+        noisy_context: bool = False,
+    ) -> str:
+        history_text = ""
+        if history:
+            history_text = "Conversation History:\n"
+            for msg in history[-3:]:
+                history_text += f"{msg.get('role', 'user').upper()}: {msg.get('content', '')}\n"
+            history_text += "\n"
+
+        structure = self._workflow_output_format("document_summary", question=question)
+        noise_note = (
+            "The extracted text appears noisy in places. Avoid copying broken OCR fragments.\n"
+            if noisy_context
+            else ""
+        )
+        return (
+            "You are summarising a document from retrieved local snippets.\n"
+            "Write a clear summary in the user's language.\n"
+            "Do not copy broken OCR text directly.\n"
+            "Clean up wording where possible, but do not invent facts.\n"
+            "If snippets are incomplete or noisy, say so briefly.\n"
+            "Focus on document purpose, main sections, obligations, risks, and practical next steps.\n"
+            "Use only the provided snippets.\n"
+            "Do not add a final 'Sources:' or 'Bronnen:' section in the answer body.\n"
+            f"{noise_note}\n"
+            f"Retrieved snippets:\n{context}\n\n"
+            f"{history_text}User Question: {question}\n\n"
+            f"Answer using this exact structure:\n{structure}\n\n"
+            "Answer:"
+        )
+
+    def _post_process_document_summary_answer(
+        self,
+        answer: str,
+        question: str,
+        noisy_context: bool,
+        search_results: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
+        cleaned = (answer or "").strip()
+        cleaned = self._strip_summary_sources_section(cleaned)
+        cleaned = self._normalize_summary_terminology(cleaned, question)
+        cleaned = self._clean_summary_answer_lines(cleaned)
+        if self._summary_answer_needs_fallback(cleaned, question):
+            cleaned = self._build_document_summary_fallback_answer(search_results or [], question)
+        cleaned = self._trim_summary_tail_to_word_boundary(cleaned)
+        if noisy_context:
+            cleaned = self._ensure_summary_noise_note(cleaned, question)
+        return cleaned
+
+    def _clean_summary_answer_lines(self, answer: str) -> str:
+        lines = answer.splitlines()
+        kept: List[str] = []
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                kept.append(line)
+                continue
+            if self._summary_text_noise_ratio(stripped) > 0.30 and len(stripped) < 80:
+                continue
+            kept.append(line)
+        cleaned = "\n".join(kept)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+        return cleaned
+
+    def _normalize_summary_terminology(self, answer: str, question: str) -> str:
+        text = answer or ""
+
+        for source, target in self.SUMMARY_DUTCH_CHAR_FIXES.items():
+            text = text.replace(source, target)
+
+        for source, target in self.SUMMARY_TERM_NORMALIZATION_MAP.items():
+            text = re.sub(rf"\b{re.escape(source)}\b", target, text, flags=re.IGNORECASE)
+
+        if self._summary_has_safety_context(text, question):
+            text = re.sub(
+                r"\bPBM\s*\(\s*Preventief\s+Beheer\s*\)",
+                "PBM (persoonlijke beschermingsmiddelen)",
+                text,
+                flags=re.IGNORECASE,
+            )
+            text = re.sub(
+                r"\bPPE\b",
+                "PBM (persoonlijke beschermingsmiddelen)",
+                text,
+                flags=re.IGNORECASE,
+            )
+            if re.search(r"\bPBM\b(?!\s*\()", text, flags=re.IGNORECASE):
+                text = re.sub(
+                    r"\bPBM\b(?!\s*\()",
+                    "PBM (persoonlijke beschermingsmiddelen)",
+                    text,
+                    count=1,
+                    flags=re.IGNORECASE,
+                )
+
+        if re.search(r"\bBTW\b", text):
+            if self._is_dutch_question(question):
+                text = re.sub(
+                    r"\bBTW\b",
+                    "btw (belasting over de toegevoegde waarde)",
+                    text,
+                    count=1,
+                )
+                text = re.sub(r"\bBTW\b", "btw", text)
+            else:
+                text = re.sub(r"\bBTW\b", "VAT", text)
+        return text
+
+    def _repair_text_artifacts(self, text: str) -> str:
+        value = str(text or "")
+        replacements = {
+            "â€™": "'",
+            "â": "'",
+            "â€˜": "'",
+            "â": "'",
+            "â€œ": "\"",
+            "â": "\"",
+            "â€": "\"",
+            "â": "\"",
+            "â€“": "-",
+            "â": "-",
+            "â€”": "-",
+            "â": "-",
+            "â€¦": "...",
+            "â¦": "...",
+            "â‚¬": "€",
+            "Ã©": "é",
+            "Ã¨": "è",
+            "Ã«": "ë",
+            "Ãª": "ê",
+            "Ã¡": "á",
+            "Ã ": "à",
+            "Ã¶": "ö",
+            "Ã¼": "ü",
+            "Ã¯": "ï",
+            "Ã§": "ç",
+            "Ã²": "ò",
+            "Ã´": "ô",
+            "Ã¢â‚¬â„¢": "'",
+            "Ã¢â‚¬Å“": "\"",
+            "Ã¢â‚¬Â": "\"",
+            "Ã¢â‚¬â€œ": "-",
+            "Ã¢â‚¬â€": "-",
+            "ÃƒÂ©": "é",
+            "ÃƒÂ¨": "è",
+            "ÃƒÂ«": "ë",
+            "ÃƒÂª": "ê",
+            "ÃƒÂ¡": "á",
+            "Ãƒ ": "à",
+            "ÃƒÂ¶": "ö",
+            "ÃƒÂ¼": "ü",
+            "ÃƒÂ¯": "ï",
+            "ÃƒÂ§": "ç",
+            "ÃƒÂ²": "ò",
+            "ÃƒÂ´": "ô",
+            "Ã¢â€šÂ¬": "€",
+        }
+        for source, target in replacements.items():
+            value = value.replace(source, target)
+        value = re.sub(r"[ \t]{2,}", " ", value)
+        value = re.sub(r"\n{3,}", "\n\n", value)
+        return value.strip()
+
+    def _summary_has_safety_context(self, answer: str, question: str) -> bool:
+        context = f"{answer}\n{question}".lower()
+        return any(term in context for term in self.SUMMARY_SAFETY_TERMS)
+
+    def _trim_summary_tail_to_word_boundary(self, answer: str) -> str:
+        text = (answer or "").rstrip()
+        if not text:
+            return text
+        if re.search(r"[.!?:\)\]\"]$", text):
+            return text
+        if text.endswith(":"):
+            return text
+        # Only trim aggressively for unusually long outputs that likely hit output limits.
+        if len(text) < 1800:
+            return text
+        if re.search(r"[A-Za-zÃ€-Ã–Ã˜-Ã¶Ã¸-Ã¿0-9]$", text):
+            boundary = re.search(r"\s+\S*$", text)
+            if boundary:
+                text = text[:boundary.start()].rstrip()
+            if text and not text.endswith("..."):
+                text = f"{text}..."
+        return text
+
+    def _strip_summary_sources_section(self, answer: str) -> str:
+        patterns = [
+            r"\n\s*Bronnen\s*:\s*.*$",
+            r"\n\s*Sources\s*:\s*.*$",
+        ]
+        cleaned = answer
+        for pattern in patterns:
+            cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE | re.DOTALL)
+        return cleaned.strip()
+
+    def _ensure_summary_noise_note(self, answer: str, question: str) -> str:
+        dutch_note = (
+            "De tekstextractie lijkt op sommige plekken rommelig, dus controleer belangrijke passages "
+            "in het originele document."
+        )
+        english_note = (
+            "Text extraction appears noisy in places, so verify important passages in the original document."
+        )
+        if dutch_note.lower() in answer.lower() or english_note.lower() in answer.lower():
+            return answer
+        note = dutch_note if self._is_dutch_question(question) else english_note
+        return f"{answer}\n\n{note}".strip()
+
+    def _summary_answer_needs_fallback(self, answer: str, question: str) -> bool:
+        text = (answer or "").strip()
+        if not text:
+            return True
+        if self._is_dutch_question(question):
+            required_headers = [
+                "Kort antwoord:",
+                "Belangrijkste onderdelen:",
+                "Belangrijke verplichtingen of aandachtspunten:",
+                "Mogelijke acties voor de gebruiker:",
+            ]
+            matched_headers = sum(1 for h in required_headers if h in text)
+            if matched_headers == 0 and len(text) < 260:
+                return True
+        if text.startswith("1.") and "Document summary" in text:
+            return True
+        bad_patterns = [r"=<{1,}", r"\bvanoers\w+", r"[~`]{2,}", r"\bwisoxrevisor\b", r"\bfss\b"]
+        if any(re.search(p, text, flags=re.IGNORECASE) for p in bad_patterns):
+            return True
+        noisy_lines = 0
+        content_lines = 0
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            content_lines += 1
+            if self._summary_text_noise_ratio(stripped) > 0.18 and len(stripped) < 120:
+                noisy_lines += 1
+        return content_lines > 0 and (noisy_lines / max(1, content_lines)) > 0.25
+
+    def _build_document_summary_fallback_answer(self, search_results: List[Dict[str, Any]], question: str) -> str:
+        rows = self._select_representative_summary_rows(search_results, retrieval_limit=min(12, max(6, len(search_results))))
+        if not rows:
+            if self._is_dutch_question(question):
+                return (
+                    "Kort antwoord:\n"
+                    "Ik kon geen bruikbare tekstfragmenten vinden om een betrouwbare samenvatting te maken.\n\n"
+                    "Belangrijkste onderdelen:\n"
+                    "- Geen bruikbare fragmenten gevonden\n\n"
+                    "Belangrijke verplichtingen of aandachtspunten:\n"
+                    "- Controleer of de documenten correct zijn geÃ¯ndexeerd en leesbaar zijn.\n\n"
+                    "Mogelijke acties voor de gebruiker:\n"
+                    "- Herindexeer de relevante bestanden en stel de vraag opnieuw."
+                )
+            return (
+                "Short answer:\n"
+                "I could not find usable snippets to produce a reliable summary.\n\n"
+                "Main sections:\n"
+                "- No usable snippets found\n\n"
+                "Key obligations or attention points:\n"
+                "- Check whether documents were indexed correctly and are readable.\n\n"
+                "Possible next actions:\n"
+                "- Re-index the relevant files and ask again."
+            )
+
+        sentence_items = self._collect_summary_sentence_items(rows, max_items=20)
+        section_items = self._collect_section_like_items(rows, max_items=4)
+        obligation_items = [s for s in sentence_items if self._is_requirement_or_risk_sentence(s["text"])]
+        if not obligation_items:
+            obligation_items = sentence_items[:4]
+
+        if self._is_dutch_question(question):
+            short = self._build_short_summary_text(sentence_items, language="nl")
+            main_sections = section_items or [s["text"] for s in sentence_items[:4]]
+            obligations = [s["text"] for s in obligation_items[:4]]
+            actions = self._build_summary_actions_from_evidence(rows, language="nl")
+            return (
+                "Kort antwoord:\n"
+                f"{short}\n\n"
+                "Belangrijkste onderdelen:\n"
+                + "\n".join(f"- {item}" for item in main_sections[:4])
+                + "\n\nBelangrijke verplichtingen of aandachtspunten:\n"
+                + "\n".join(f"- {item}" for item in obligations[:4])
+                + "\n\nMogelijke acties voor de gebruiker:\n"
+                + "\n".join(f"- {item}" for item in actions[:3])
+            ).strip()
+
+        short = self._build_short_summary_text(sentence_items, language="en")
+        main_sections = section_items or [s["text"] for s in sentence_items[:4]]
+        obligations = [s["text"] for s in obligation_items[:4]]
+        actions = self._build_summary_actions_from_evidence(rows, language="en")
+        return (
+            "Short answer:\n"
+            f"{short}\n\n"
+            "Main sections:\n"
+            + "\n".join(f"- {item}" for item in main_sections[:4])
+            + "\n\nKey obligations or attention points:\n"
+            + "\n".join(f"- {item}" for item in obligations[:4])
+            + "\n\nPossible next actions:\n"
+            + "\n".join(f"- {item}" for item in actions[:3])
+        ).strip()
+
+    def _collect_summary_sentence_items(self, rows: List[Dict[str, Any]], max_items: int = 20) -> List[Dict[str, str]]:
+        items: List[Dict[str, str]] = []
+        seen = set()
+        for row in rows:
+            text = self._clean_summary_text(self._row_primary_text(row))
+            if not text:
+                continue
+            parts = re.split(r"(?<=[\.\!\?;:])\s+|\n+", text)
+            for part in parts:
+                sentence = re.sub(r"\s+", " ", part).strip(" -\t")
+                if len(sentence) < 45 or len(sentence) > 240:
+                    continue
+                sig = " ".join(re.findall(r"\w+", sentence.lower())[:12])
+                if sig in seen:
+                    continue
+                seen.add(sig)
+                items.append({"text": sentence, "source": self._row_source_label(row)})
+                if len(items) >= max_items:
+                    return items
+        return items
+
+    def _collect_section_like_items(self, rows: List[Dict[str, Any]], max_items: int = 4) -> List[str]:
+        section_items: List[str] = []
+        seen = set()
+        for row in rows:
+            title = re.sub(r"\s+", " ", str(row.get("title", "") or "")).strip(" -\t")
+            if not title or title.lower() in {"unknown", "untitled"}:
+                continue
+            if len(title) < 3 or len(title) > 110:
+                continue
+            lower = title.lower()
+            if lower in seen:
+                continue
+            seen.add(lower)
+            section_items.append(title)
+            if len(section_items) >= max_items:
+                break
+        return section_items
+
+    def _is_requirement_or_risk_sentence(self, text: str) -> bool:
+        t = (text or "").lower()
+        risk_terms = [
+            "moet", "dient", "verplicht", "vereist", "risico", "incident", "beheersmaatregel",
+            "shall", "must", "required", "obligation", "hazard", "mitigation",
+        ]
+        return any(term in t for term in risk_terms)
+
+    def _build_short_summary_text(self, sentence_items: List[Dict[str, str]], language: str = "nl") -> str:
+        if not sentence_items:
+            if language == "nl":
+                return "De beschikbare fragmenten geven te weinig informatie voor een volledige samenvatting."
+            return "Available snippets provide too little information for a complete summary."
+        first = sentence_items[0]["text"]
+        second = sentence_items[1]["text"] if len(sentence_items) > 1 else ""
+        if language == "nl":
+            base = f"Dit document beschrijft voornamelijk: {first}"
+            if second:
+                base += f" Daarnaast benadrukt het document: {second}"
+            return base
+        base = f"This document mainly describes: {first}"
+        if second:
+            base += f" It also highlights: {second}"
+        return base
+
+    def _build_summary_actions_from_evidence(self, rows: List[Dict[str, Any]], language: str = "nl") -> List[str]:
+        joined = " ".join(self._row_text(r) for r in rows[:8])
+        actions: List[str] = []
+        if any(t in joined for t in ["risico", "incident", "veiligheid", "veiligheidsinstructie", "pbm"]):
+            actions.append(
+                "Controleer of alle veiligheidsinstructies, risicoanalyses en werkvergunningen actueel zijn."
+                if language == "nl"
+                else "Verify that safety instructions, risk assessments, and work permits are up to date."
+            )
+        if any(t in joined for t in ["contract", "verplicht", "aansprakelijkheid", "verzekering"]):
+            actions.append(
+                "Loop contractuele verplichtingen en verzekeringsvoorwaarden na met de verantwoordelijke projectleider."
+                if language == "nl"
+                else "Review contractual obligations and insurance conditions with the responsible project lead."
+            )
+        actions.append(
+            "Valideer kritieke passages in het originele document voordat je formele beslissingen neemt."
+            if language == "nl"
+            else "Validate critical passages in the original document before making formal decisions."
+        )
+        return actions[:3]
 
     def _generate_llama_answer(self, prompt: str, temperature: float) -> str:
         try:
@@ -1540,7 +2534,604 @@ class LlamaService:
             return self._build_insurance_risk_answer(search_results)
         if intent == "client_file_summary":
             return self._build_client_file_summary_answer(search_results)
+        if intent == "technical_requirements_check":
+            return self._build_technical_requirements_answer(search_results)
+        if intent == "risk_attention_check":
+            return self._build_risk_attention_answer(search_results)
+        if intent == "ce_compliance_gap_check":
+            return self._build_ce_compliance_gap_answer(search_results)
+        if intent == "document_governance_check":
+            return self._build_document_governance_answer(search_results)
+        if intent == "quotation_preparation":
+            return self._build_quotation_preparation_answer(search_results)
+        if intent == "ai_use_case_identification":
+            return self._build_ai_use_case_identification_answer(search_results)
+        if intent == "use_case_prioritization":
+            return self._build_use_case_prioritization_answer(search_results)
+        if intent == "pilot_project_translation":
+            return self._build_pilot_project_translation_answer(search_results)
+        if intent == "local_privacy_explanation":
+            return self._build_local_privacy_explanation_answer(search_results)
         return self._build_missing_info_answer(search_results)
+
+    def _build_technical_requirements_answer(self, search_results: List[Dict[str, Any]]) -> str:
+        requirement_terms = [
+            "moet", "dient", "verplicht", "vereist", "eis", "procedure", "stap",
+            "work permit", "werkvergunning", "instructie", "norm", "richtlijn",
+        ]
+        component_terms = [
+            "systeem", "installatie", "onderdeel", "component", "machine", "constructie", "equipment",
+        ]
+        req_items = self._collect_evidence_sentences(search_results, requirement_terms, max_items=6)
+        comp_items = self._collect_evidence_sentences(search_results, component_terms, max_items=4)
+        if not req_items and not comp_items:
+            return (
+                "Kort antwoord:\n"
+                "Ik vond geen expliciete technische eisen in de huidige retrievalset.\n\n"
+                "Gevonden informatie:\n"
+                "- Geen duidelijke eiszinnen gedetecteerd in de opgehaalde fragmenten.\n\n"
+                "Aandachtspunten of ontbrekende informatie:\n"
+                "- Controleer of de juiste technische specificaties, bijlagen of werkmethodes zijn geÃ¯ndexeerd.\n\n"
+                "Mogelijke vervolgstap:\n"
+                "- Indexeer aanvullende technische documenten en stel de vraag opnieuw met documenttype of projectcontext."
+            )
+        found_lines = []
+        for item in (req_items + comp_items)[:8]:
+            found_lines.append(f"- {item['text']} (bron: {item['source']})")
+        return (
+            "Kort antwoord:\n"
+            "De documenten bevatten technische eisen en uitvoeringsverplichtingen die vooraf gecontroleerd moeten worden.\n\n"
+            "Gevonden informatie:\n"
+            + "\n".join(found_lines)
+            + "\n\nAandachtspunten of ontbrekende informatie:\n"
+            "- Niet alle eisen zijn gekwantificeerd (bijv. toleranties, acceptatiecriteria of exacte normversies).\n"
+            "- Verifieer dat de geldende versie van procedures en normen is gebruikt.\n\n"
+            "Mogelijke vervolgstap:\n"
+            "- Maak een controlelijst per eis: bron, eigenaar, verificatiemethode en bewijs van naleving."
+        ).strip()
+
+    def _build_risk_attention_answer(self, search_results: List[Dict[str, Any]]) -> str:
+        risk_terms = [
+            "risico", "gevaar", "incident", "bijna-ongeval", "aandachtspunt", "verboden",
+            "veiligheid", "beheersmaatregel", "waarschuwing", "hazard", "mitigation",
+        ]
+        risk_items = self._collect_evidence_sentences(search_results, risk_terms, max_items=8)
+        if not risk_items:
+            return (
+                "Kort antwoord:\n"
+                "Er zijn in de huidige snippets geen expliciete risicopassages gevonden.\n\n"
+                "Gevonden informatie:\n"
+                "- Geen directe risicozinnen in de opgehaalde context.\n\n"
+                "Aandachtspunten of ontbrekende informatie:\n"
+                "- Mogelijk ontbreken HSE-bijlagen, risicoanalyses of incidentprocedures in de index.\n\n"
+                "Mogelijke vervolgstap:\n"
+                "- Vraag gericht op risicoanalyse, incidentmelding of veiligheidsmaatregelen per processtap."
+            )
+        found_lines = [f"- {item['text']} (bron: {item['source']})" for item in risk_items[:8]]
+        return (
+            "Kort antwoord:\n"
+            "Het document benoemt meerdere risicoâ€™s en aandachtspunten die operationele en veiligheidsimpact kunnen hebben.\n\n"
+            "Gevonden informatie:\n"
+            + "\n".join(found_lines)
+            + "\n\nAandachtspunten of ontbrekende informatie:\n"
+            "- Niet elk risico is voorzien van kans/impact-classificatie of meetbare acceptatiegrens.\n"
+            "- Controleer of mitigerende acties en verantwoordelijken expliciet zijn toegewezen.\n\n"
+            "Mogelijke vervolgstap:\n"
+            "- Zet de gevonden risicoâ€™s om naar een risicoregister met eigenaar, deadline en bewijs van mitigatie."
+        ).strip()
+
+    def _build_ce_compliance_gap_answer(self, search_results: List[Dict[str, Any]]) -> str:
+        ce_requirements = [
+            ("Technisch dossier", ["technisch dossier", "technical file"]),
+            ("Risicobeoordeling", ["risicobeoordeling", "risk assessment", "hazard analysis"]),
+            ("Normen en richtlijnen", ["norm", "richtlijn", "standard", "directive"]),
+            ("Verklaring van overeenstemming", ["verklaring van overeenstemming", "declaration of conformity"]),
+            ("Test- of validatierapporten", ["testrapport", "test report", "validatie", "verification"]),
+            ("Gebruikers- en veiligheidsinstructies", ["gebruikershandleiding", "veiligheidsinstructie", "instructions for use"]),
+        ]
+        found: List[str] = []
+        missing: List[str] = []
+        for label, terms in ce_requirements:
+            evidence = self._collect_evidence_sentences(search_results, terms, max_items=1)
+            if evidence:
+                found.append(f"- {label}: {evidence[0]['text']} (bron: {evidence[0]['source']})")
+            else:
+                missing.append(f"- {label}: geen expliciete onderbouwing gevonden in de opgehaalde snippets.")
+        return (
+            "Kort antwoord:\n"
+            "Op basis van de huidige documenten is CE-relevante informatie deels aanwezig, maar volledige compliance is niet aantoonbaar zonder aanvullende onderbouwing.\n\n"
+            "Gevonden informatie:\n"
+            + ("\n".join(found) if found else "- Geen expliciete CE-onderdelen gevonden.")
+            + "\n\nAandachtspunten of ontbrekende informatie:\n"
+            + ("\n".join(missing) if missing else "- Geen directe hiaten gevonden; controle op volledigheid blijft noodzakelijk.")
+            + "\n\nMogelijke vervolgstap:\n"
+            "- Maak een CE-checkmatrix met per vereist onderdeel: aanwezig bewijs, ontbrekend bewijs, verantwoordelijke en deadline."
+        ).strip()
+
+    def _build_document_governance_answer(self, search_results: List[Dict[str, Any]]) -> str:
+        metadata = self._scan_metadata_signals(search_results)
+        conflict_items = self._scan_instruction_conflicts(search_results, max_items=4)
+        standard_gaps = self._scan_standard_references_without_version(search_results, max_items=4)
+        ocr_items = self._scan_ocr_noise_candidates(search_results, max_items=4)
+        confidentiality_items = self._collect_evidence_sentences(
+            search_results,
+            ["vertrouwelijk", "confidential", "directie", "schriftelijke toelating", "privacy", "gegevens"],
+            max_items=3,
+        )
+
+        found_lines: List[str] = []
+        missing_lines: List[str] = []
+        next_steps: List[str] = []
+
+        if metadata["found_lines"]:
+            found_lines.extend(metadata["found_lines"][:4])
+        else:
+            found_lines.append("- Geen expliciete metadata-velden in de huidige snippets gevonden.")
+
+        if conflict_items:
+            found_lines.extend([f"- Mogelijke tegenstrijdigheid: {item}" for item in conflict_items[:2]])
+        if standard_gaps:
+            found_lines.extend([f"- Norm/richtlijn zonder versie: {item}" for item in standard_gaps[:2]])
+        if confidentiality_items:
+            found_lines.extend(
+                [f"- Vertrouwelijkheidsrelevant: {item['text']} (bron: {item['source']})" for item in confidentiality_items[:2]]
+            )
+
+        if metadata["missing_fields"]:
+            missing_lines.append("- Mogelijk ontbrekende metadata: " + ", ".join(metadata["missing_fields"]) + ".")
+            next_steps.append("Vul ontbrekende metadata aan in de documentkop of documentregister.")
+        else:
+            missing_lines.append("- Kernmetadata lijkt deels aanwezig; controle op consistentie tussen documenten blijft nodig.")
+
+        if standard_gaps:
+            missing_lines.append("- Meerdere verwijzingen naar normen/richtlijnen zonder concrete versie of jaartal.")
+            next_steps.append("Leg per norm vast: code, versie, publicatiedatum en toepassingsscope.")
+        if conflict_items:
+            missing_lines.append("- Mogelijke dubbeling of tegenstrijdigheid in instructies vraagt handmatige review.")
+            next_steps.append("Maak een conflictlijst met bronlocaties en wijs per punt een eigenaar toe.")
+        if ocr_items:
+            missing_lines.append("- Er zijn OCR-gevoelige fragmenten die handmatige validatie vereisen.")
+            next_steps.append("Hercontroleer OCR-gevoelige passages in het originele PDF-bestand.")
+
+        if not next_steps:
+            next_steps.append("Plan een korte documentreview op metadata, versiebeheer en traceerbaarheid.")
+        next_steps.append("Koppel deze bevindingen aan de volgende revisieplanning met prioriteit en deadline.")
+
+        return (
+            "Kort antwoord:\n"
+            "Het dossier bevat bruikbare inhoud, maar voor robuust documentbeheer zijn metadata, versieverwijzingen en kwaliteitscontroles nog aan te scherpen.\n\n"
+            "Gevonden informatie:\n"
+            + "\n".join(found_lines[:8])
+            + "\n\nAandachtspunten of ontbrekende informatie:\n"
+            + "\n".join(missing_lines[:8])
+            + "\n\nMogelijke vervolgstap:\n"
+            + "\n".join(f"- {step}" for step in next_steps[:4])
+        ).strip()
+
+    def _scan_metadata_signals(self, search_results: List[Dict[str, Any]]) -> Dict[str, Any]:
+        patterns = {
+            "datum": [r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b", r"\b20\d{2}\b"],
+            "revisie": [r"\brev(?:ision)?\.?\s*[a-z0-9\-_/]+\b", r"\brevisie\b", r"\bversion\b", r"\bversie\b"],
+            "status": [r"\bstatus\b", r"\bdraft\b", r"\bfinal\b", r"\bgoedgekeurd\b", r"\bapproved\b"],
+            "eigenaar": [r"\beigenaar\b", r"\bowner\b", r"\bauteur\b", r"\bauthor\b", r"\bdocumentbeheerder\b"],
+        }
+        found_fields = set()
+        found_lines: List[str] = []
+        for row in search_results[:12]:
+            text = self._compress_context_text(self._row_primary_text(row))
+            if not text:
+                continue
+            for field, pats in patterns.items():
+                if field in found_fields:
+                    continue
+                if any(re.search(p, text, flags=re.IGNORECASE) for p in pats):
+                    found_fields.add(field)
+                    found_lines.append(f"- Metadata-signaal {field}: aanwezig (bron: {self._row_source_label(row)})")
+        required = {"datum", "revisie", "status", "eigenaar"}
+        missing_fields = sorted(list(required - found_fields))
+        return {"found_lines": found_lines, "missing_fields": missing_fields}
+
+    def _scan_instruction_conflicts(self, search_results: List[Dict[str, Any]], max_items: int = 4) -> List[str]:
+        restrictive = self._collect_evidence_sentences(
+            search_results,
+            ["verboden", "niet toegestaan", "mag niet", "prohibited", "not allowed"],
+            max_items=8,
+        )
+        permissive = self._collect_evidence_sentences(
+            search_results,
+            ["toegestaan", "mag", "allowed", "permitted"],
+            max_items=8,
+        )
+        items: List[str] = []
+        if restrictive and permissive:
+            for left in restrictive[:2]:
+                for right in permissive[:2]:
+                    left_sig = set(re.findall(r"\w+", left["text"].lower()))
+                    right_sig = set(re.findall(r"\w+", right["text"].lower()))
+                    overlap = left_sig.intersection(right_sig) - self.GENERIC_STOPWORDS_NL
+                    if len(overlap) >= 2:
+                        term = ", ".join(sorted(list(overlap))[:3])
+                        items.append(
+                            f"mogelijk conflict rond [{term}] tussen {left['source']} en {right['source']}"
+                        )
+                        if len(items) >= max_items:
+                            return items
+        return items
+
+    def _scan_standard_references_without_version(
+        self, search_results: List[Dict[str, Any]], max_items: int = 4
+    ) -> List[str]:
+        terms = ["norm", "richtlijn", "directive", "standard", "iso", "nen", "en "]
+        items: List[str] = []
+        seen = set()
+        for row in search_results[:14]:
+            text = self._compress_context_text(self._row_primary_text(row))
+            if not text:
+                continue
+            parts = re.split(r"(?<=[\.\!\?;:])\s+|\n+", text)
+            for part in parts:
+                sentence = re.sub(r"\s+", " ", part).strip()
+                if len(sentence) < 30:
+                    continue
+                low = sentence.lower()
+                if not any(t in low for t in terms):
+                    continue
+                has_version = bool(
+                    re.search(r"\b(19|20)\d{2}\b", low)
+                    or re.search(r"\b(iso|nen|en|iec)\s*\d{2,6}([:-]\d{2,4})?\b", low)
+                    or re.search(r"\bversion\s*\d+(\.\d+)?\b", low)
+                    or re.search(r"\brev(?:ision)?\.?\s*[a-z0-9\-_/]+\b", low)
+                )
+                if has_version:
+                    continue
+                cleaned = self._clean_evidence_sentence(sentence)
+                if self._is_low_quality_evidence_sentence(cleaned):
+                    continue
+                sig = " ".join(re.findall(r"\w+", cleaned.lower())[:10])
+                if sig in seen:
+                    continue
+                seen.add(sig)
+                items.append(f"{cleaned} (bron: {self._row_source_label(row)})")
+                if len(items) >= max_items:
+                    return items
+        return items
+
+    def _scan_ocr_noise_candidates(self, search_results: List[Dict[str, Any]], max_items: int = 4) -> List[str]:
+        items: List[str] = []
+        for row in search_results[:16]:
+            text = self._row_primary_text(row)
+            if not text:
+                continue
+            ratio = self._summary_text_noise_ratio(text)
+            if ratio < 0.16:
+                continue
+            preview = re.sub(r"\s+", " ", text).strip()[:110]
+            preview = self._clean_evidence_sentence(preview)
+            if not preview:
+                continue
+            items.append(f"{preview}... (bron: {self._row_source_label(row)})")
+            if len(items) >= max_items:
+                break
+        return items
+
+    def _build_quotation_preparation_answer(self, search_results: List[Dict[str, Any]]) -> str:
+        info_blocks = [
+            ("Klantvraag en scope", ["scope", "klantvraag", "requirements", "eisen", "deliverable", "levering"]),
+            ("Technische randvoorwaarden", ["technisch", "specificatie", "norm", "richtlijn", "interface", "component"]),
+            ("Planning en doorlooptijd", ["planning", "doorlooptijd", "deadline", "mijlpaal", "lead time"]),
+            ("Risicoâ€™s en aannames", ["risico", "assumptie", "aandachtspunt", "beperking"]),
+            ("Prijs- en kostengrondslag", ["prijs", "kosten", "rate", "tarief", "budget"]),
+            ("Contractuele voorwaarden", ["contract", "aansprakelijkheid", "garantie", "acceptatie"]),
+        ]
+        found: List[str] = []
+        missing: List[str] = []
+        for label, terms in info_blocks:
+            evidence = self._collect_evidence_sentences(search_results, terms, max_items=1)
+            if evidence:
+                found.append(f"- {label}: {evidence[0]['text']} (bron: {evidence[0]['source']})")
+            else:
+                missing.append(f"- {label}: niet expliciet gevonden in de huidige snippets.")
+        return (
+            "Kort antwoord:\n"
+            "De documenten bevatten bruikbare input voor een eerste offerte-opzet, maar belangrijke commerciÃ«le en scopegegevens kunnen nog ontbreken.\n\n"
+            "Gevonden informatie:\n"
+            + ("\n".join(found) if found else "- Beperkte offerte-relevante informatie in de huidige retrievalset.")
+            + "\n\nAandachtspunten of ontbrekende informatie:\n"
+            + ("\n".join(missing) if missing else "- Geen kritieke hiaten gedetecteerd, verifieer wel volledigheid.")
+            + "\n- Geen prijzen, doorlooptijden of toezeggingen invullen zonder expliciete brondata.\n\n"
+            "Mogelijke vervolgstap:\n"
+            "- Bouw een offertechecklist met secties: scope, technische eisen, planning, risicoâ€™s, aannames, prijsgrondslag en contractvoorwaarden."
+        ).strip()
+
+    def _build_ai_use_case_identification_answer(self, search_results: List[Dict[str, Any]]) -> str:
+        use_cases = self._infer_candidate_use_cases(search_results)
+        lines = []
+        for uc in use_cases[:4]:
+            lines.append(
+                f"- {uc['name']}: {uc['why']} (evidence: {uc['evidence']})"
+            )
+        return (
+            "Kort antwoord:\n"
+            "Op basis van de documentpatronen zijn meerdere praktische AI-use-cases haalbaar als ondersteunende laag bovenop bestaande processen.\n\n"
+            "Gevonden informatie:\n"
+            + "\n".join(lines)
+            + "\n\nAandachtspunten of ontbrekende informatie:\n"
+            "- Datakwaliteit (OCR, versiebeheer, metadata) bepaalt direct de betrouwbaarheid van antwoorden.\n"
+            "- AI ondersteunt voorbereiding, maar neemt geen formele compliance- of contractbeslissingen.\n\n"
+            "Mogelijke vervolgstap:\n"
+            "- Kies 1 use-case met duidelijke documentstroom en meetbaar resultaat om als pilot te starten."
+        ).strip()
+
+    def _build_use_case_prioritization_answer(self, search_results: List[Dict[str, Any]]) -> str:
+        use_cases = self._infer_candidate_use_cases(search_results)
+        ranked = sorted(use_cases, key=lambda x: x["total_score"], reverse=True)
+        rows: List[str] = []
+        for uc in ranked[:4]:
+            rows.append(
+                f"- {uc['name']}: impact {uc['impact']}/5, haalbaarheid {uc['feasibility']}/5, databeschikbaarheid {uc['data_availability']}/5 (totaal {uc['total_score']}/15)"
+            )
+        top = ranked[0] if ranked else None
+        top_line = top["name"] if top else "Nog geen duidelijke kandidaat"
+        return (
+            "Kort antwoord:\n"
+            f"De meest kansrijke eerste pilot is: {top_line}.\n\n"
+            "Gevonden informatie:\n"
+            + ("\n".join(rows) if rows else "- Onvoldoende basis om use-cases te scoren.")
+            + "\n\nAandachtspunten of ontbrekende informatie:\n"
+            "- Scores zijn indicatief en afhankelijk van documentdekking en procescontext.\n"
+            "- Valideer met proceseigenaren of de benodigde data operationeel beschikbaar is.\n\n"
+            "Mogelijke vervolgstap:\n"
+            "- Start met een timeboxed pilot voor de top-1 use-case en meet tijdswinst, kwaliteit en adoptie."
+        ).strip()
+
+    def _build_pilot_project_translation_answer(self, search_results: List[Dict[str, Any]]) -> str:
+        use_cases = self._infer_candidate_use_cases(search_results)
+        ranked = sorted(use_cases, key=lambda x: x["total_score"], reverse=True)
+        chosen = ranked[0] if ranked else {
+            "name": "Interne document-Q&A en samenvatting",
+            "problem": "Medewerkers verliezen tijd met zoeken in versnipperde documentatie.",
+            "required_data": "Projectdocumenten, procedures, contractbijlagen, versiehistorie.",
+            "stakeholders": "Projectleiding, engineering, kwaliteit/HSE, IT/data.",
+            "prototype": "Lokale chatinterface met bronkaarten, samenvatting en eisenextractie.",
+            "success_metrics": "Zoektijd per vraag, % bruikbare antwoorden, correctievolume door experts.",
+        }
+        return (
+            "Kort antwoord:\n"
+            f"Een realistisch pilotproject is: {chosen['name']}.\n\n"
+            "Gevonden informatie:\n"
+            f"- Probleem: {chosen['problem']}\n"
+            f"- Benodigde data: {chosen['required_data']}\n"
+            f"- Betrokkenen: {chosen['stakeholders']}\n"
+            f"- Prototype (20 weken): {chosen['prototype']}\n"
+            f"- Verwachte opbrengst: {chosen['success_metrics']}\n\n"
+            "Aandachtspunten of ontbrekende informatie:\n"
+            "- Borg dat documentkwaliteit, toegangsrechten en validatiecriteria vooraf zijn vastgelegd.\n"
+            "- Plan periodieke reviewmomenten met domeinexperts om hallucinaties te beperken.\n\n"
+            "Mogelijke vervolgstap:\n"
+            "- Stel een pilotcharter op met scope, dataset, evaluatiekader en weekplanning (0-4 setup, 5-12 build, 13-20 evaluatie)."
+        ).strip()
+
+    def _build_local_privacy_explanation_answer(self, search_results: List[Dict[str, Any]]) -> str:
+        has_local_docs = any(str(r.get("corpus_type", "")).lower() in {"uploaded", "existing"} for r in search_results)
+        local_line = (
+            "Documenten worden lokaal geÃ¯ndexeerd en geraadpleegd binnen deze omgeving."
+            if has_local_docs
+            else "Deze setup is ontworpen voor lokale documentverwerking en retrieval."
+        )
+        return (
+            "Kort antwoord:\n"
+            "Een lokale AI-assistent is relevant omdat gevoelige bedrijfsdocumentatie binnen de eigen omgeving verwerkt kan blijven.\n\n"
+            "Gevonden informatie:\n"
+            f"- {local_line}\n"
+            "- Antwoorden worden gebaseerd op lokale retrievalresultaten met bronkaarten voor controle.\n\n"
+            "Aandachtspunten of ontbrekende informatie:\n"
+            "- Lokale AI blijft afhankelijk van datakwaliteit, indexdekking en modelcapaciteit.\n"
+            "- Menselijke controle blijft nodig voor compliance, contracten en formele besluitvorming.\n\n"
+            "Mogelijke vervolgstap:\n"
+            "- Leg een governance-kader vast: toegangsrechten, logging, reviewproces en escalatie voor kritieke beslissingen."
+        ).strip()
+
+    def _collect_evidence_sentences(
+        self,
+        search_results: List[Dict[str, Any]],
+        terms: List[str],
+        max_items: int = 6,
+    ) -> List[Dict[str, str]]:
+        items: List[Dict[str, str]] = []
+        candidates: List[Tuple[float, Dict[str, str]]] = []
+        seen = set()
+        terms_lower = [t.lower() for t in terms]
+        for row in search_results:
+            text = self._clean_summary_text(self._row_primary_text(row))
+            if not text:
+                text = self._compress_context_text(self._row_primary_text(row))
+            if not text:
+                continue
+            parts = re.split(r"(?<=[\.\!\?;:])\s+|\n+", text)
+            for part in parts:
+                sentence = re.sub(r"\s+", " ", part).strip(" -\t")
+                if len(sentence) < 35 or len(sentence) > 220:
+                    continue
+                if self._summary_text_noise_ratio(sentence) > 0.12:
+                    continue
+                low = sentence.lower()
+                words = re.findall(r"\w+", low)
+                if len(words) < 6:
+                    continue
+                matched_terms = [term for term in terms_lower if term in low]
+                if not matched_terms:
+                    continue
+                sentence = self._extract_relevant_clause(sentence, matched_terms)
+                sentence = self._clean_evidence_sentence(sentence)
+                if self._is_low_quality_evidence_sentence(sentence):
+                    continue
+                signature = " ".join(re.findall(r"\w+", sentence.lower())[:12])
+                if signature in seen:
+                    continue
+                seen.add(signature)
+                score = self._score_evidence_sentence(sentence, matched_terms)
+                candidates.append((score, {"text": sentence, "source": self._row_source_label(row)}))
+
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        for _, item in candidates[: max_items * 2]:
+            items.append(item)
+            if len(items) >= max_items:
+                break
+        return items
+
+    def _extract_relevant_clause(self, sentence: str, matched_terms: List[str]) -> str:
+        s = str(sentence or "").strip()
+        if not s or not matched_terms:
+            return s
+        low = s.lower()
+        first_pos = None
+        first_term = ""
+        for term in matched_terms:
+            pos = low.find(term)
+            if pos >= 0 and (first_pos is None or pos < first_pos):
+                first_pos = pos
+                first_term = term
+        if first_pos is None:
+            return s
+
+        start = max(0, first_pos - 70)
+        end = min(len(s), first_pos + max(120, len(first_term) + 90))
+        window = s[start:end]
+        # Keep the clause as natural as possible by trimming to nearby separators.
+        left_cut = max(window.rfind(". "), window.rfind("; "), window.rfind(": "))
+        if left_cut >= 0:
+            window = window[left_cut + 2 :]
+        right_candidates = [idx for idx in [window.find(". "), window.find("; ")] if idx >= 0]
+        if right_candidates:
+            window = window[: min(right_candidates) + 1]
+        return window.strip(" -\t")
+
+    def _clean_evidence_sentence(self, sentence: str) -> str:
+        s = str(sentence or "")
+        s = re.sub(r"^[\W_]+", "", s)
+        s = re.sub(r"\s+", " ", s).strip()
+        s = re.sub(r"[\|_/]{2,}", " ", s)
+        s = re.sub(r"\s{2,}", " ", s).strip()
+        # Remove obvious orphan section numbering at line start.
+        s = re.sub(r"^\d+(\.\d+){0,3}\s*", "", s).strip()
+        return s
+
+    def _is_low_quality_evidence_sentence(self, sentence: str) -> bool:
+        s = str(sentence or "").strip()
+        if len(s) < 35:
+            return True
+        words = re.findall(r"\w+", s.lower())
+        if len(words) < 6:
+            return True
+        alpha_ratio = sum(ch.isalpha() for ch in s) / max(1, len(s))
+        if alpha_ratio < 0.6:
+            return True
+        long_odd_tokens = 0
+        for w in words:
+            if len(w) >= 11 and not re.search(r"[aeiouyÃ¡Ã Ã¤Ã¢Ã©Ã¨Ã«ÃªÃ­Ã¬Ã¯Ã®Ã³Ã²Ã¶Ã´ÃºÃ¹Ã¼Ã»]", w):
+                long_odd_tokens += 1
+        if long_odd_tokens >= 2:
+            return True
+        # Reject lines that are mostly title/header fragments.
+        if re.search(r"\b(page|pagina)\b\s*\d*", s.lower()) and len(words) < 10:
+            return True
+        return False
+
+    def _score_evidence_sentence(self, sentence: str, matched_terms: List[str]) -> float:
+        s = str(sentence or "")
+        low = s.lower()
+        words = re.findall(r"\w+", low)
+        if not words:
+            return -999.0
+        score = 0.0
+        score += min(3.0, len(words) / 6.0)
+        score += min(2.5, sum(1 for t in matched_terms if t in low) * 0.8)
+        score += 1.0 if re.search(r"[.;:]", s) else 0.0
+        score -= self._summary_text_noise_ratio(s) * 8.0
+
+        weird_tokens = 0
+        for w in words:
+            if len(w) < 8:
+                continue
+            vowels = len(re.findall(r"[aeiouyÃ¡Ã Ã¤Ã¢Ã©Ã¨Ã«ÃªÃ­Ã¬Ã¯Ã®Ã³Ã²Ã¶Ã´ÃºÃ¹Ã¼Ã»]", w))
+            ratio = vowels / max(1, len(w))
+            if ratio < 0.22:
+                weird_tokens += 1
+        score -= weird_tokens * 0.9
+
+        if re.match(r"^[a-z]{10,}\b", low):
+            score -= 1.0
+        return score
+
+    def _infer_candidate_use_cases(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        text_blob = " ".join(self._row_text(r) for r in search_results[:14])
+        source_count = max(1, len(search_results))
+        templates = [
+            {
+                "name": "Veiligheids- en verplichtingencheck uit documentatie",
+                "signals": ["veiligheid", "risico", "incident", "verplicht", "werkvergunning", "instructie"],
+                "problem": "Belangrijke veiligheids- en verplichtingsinformatie staat verspreid over meerdere documenten.",
+                "required_data": "HSE-documenten, contractverplichtingen, werkprocedures, incidentregistraties.",
+                "stakeholders": "HSE, projectleiding, uitvoering, kwaliteitscoÃ¶rdinatie.",
+                "prototype": "Lokale assistent die eisen/risicoâ€™s per vraag samenvat met bronkaarten.",
+                "success_metrics": "Minder zoektijd, hogere dekking van controles, minder gemiste verplichtingen.",
+            },
+            {
+                "name": "CE-dossier volledigheidscontrole",
+                "signals": ["ce", "conformiteit", "technisch dossier", "norm", "richtlijn", "risicobeoordeling"],
+                "problem": "CE-gerelateerde bewijsstukken zijn vaak incompleet of lastig traceerbaar.",
+                "required_data": "Normenoverzicht, testverslagen, risicobeoordeling, conformiteitsverklaring.",
+                "stakeholders": "Engineering, quality/compliance, projectleiding.",
+                "prototype": "Checklist-engine die per CE-onderdeel aanwezige en ontbrekende bewijsstukken markeert.",
+                "success_metrics": "Snellere dossiercontrole, minder ontbrekende CE-items bij review.",
+            },
+            {
+                "name": "Offertevoorbereiding op basis van technische documentatie",
+                "signals": ["offerte", "scope", "eis", "planning", "randvoorwaarde", "contract"],
+                "problem": "Offerte-input moet handmatig uit verschillende documenten worden verzameld.",
+                "required_data": "Klantvraag, technische eisen, planning, voorwaarden, historische projectdocumenten.",
+                "stakeholders": "Sales, engineering, calculatie, projectmanagement.",
+                "prototype": "Assistent die een offertechecklist en conceptopbouw maakt met bronverwijzingen.",
+                "success_metrics": "Kortere offertedoorlooptijd en minder iteraties door ontbrekende input.",
+            },
+            {
+                "name": "Interne kennisassistent voor technische documentvragen",
+                "signals": ["procedure", "stap", "verantwoord", "onderdeel", "systeem", "handleiding"],
+                "problem": "Nieuwe en bestaande medewerkers verliezen tijd aan handmatig zoeken in documentatie.",
+                "required_data": "Procedures, handleidingen, projectdocumenten en FAQ-achtige notities.",
+                "stakeholders": "Engineering, operations, onboarding, IT.",
+                "prototype": "Lokale Q&A met bronkaarten en samenvattingen per onderwerp.",
+                "success_metrics": "Minder zoektijd, hogere first-time-right beantwoording, snellere onboarding.",
+            },
+        ]
+        use_cases: List[Dict[str, Any]] = []
+        for template in templates:
+            hits = sum(1 for s in template["signals"] if s in text_blob)
+            coverage = hits / max(1, len(template["signals"]))
+            evidence_items = self._collect_evidence_sentences(search_results, template["signals"], max_items=2)
+            evidence_text = "; ".join(f"{e['text']} ({e['source']})" for e in evidence_items) if evidence_items else "beperkte directe bewijsregels"
+            impact = min(5, max(2, int(round(1 + (coverage * 4)))))
+            feasibility = min(5, max(2, int(round(1 + (len(evidence_items) * 1.5) + (1 if source_count >= 8 else 0)))))
+            data_availability = min(5, max(1, int(round(1 + min(4, source_count / 6) + coverage))))
+            total = impact + feasibility + data_availability
+            why = "Sterke documentevidence voor repeterende documenttaken." if hits >= 3 else "Bruikbaar, maar extra documentdekking kan nodig zijn."
+            use_cases.append(
+                {
+                    "name": template["name"],
+                    "impact": impact,
+                    "feasibility": feasibility,
+                    "data_availability": min(5, data_availability),
+                    "total_score": min(15, total),
+                    "why": why,
+                    "evidence": evidence_text,
+                    "problem": template["problem"],
+                    "required_data": template["required_data"],
+                    "stakeholders": template["stakeholders"],
+                    "prototype": template["prototype"],
+                    "success_metrics": template["success_metrics"],
+                }
+            )
+        return use_cases
 
     def _row_text(self, row: Dict[str, Any]) -> str:
         return " ".join(
@@ -1648,7 +3239,7 @@ class LlamaService:
 
     def _extract_numbers(self, text: str) -> List[float]:
         values: List[float] = []
-        for token in re.findall(r"(?:€|\$)?\s*\(?\d[\d\.,]*\)?", text or ""):
+        for token in re.findall(r"(?:â‚¬|\$)?\s*\(?\d[\d\.,]*\)?", text or ""):
             val = self._parse_numeric_token(token)
             if val is None:
                 continue
@@ -1667,7 +3258,7 @@ class LlamaService:
     def _extract_named_values(self, rows: List[Dict[str, Any]], label_terms: List[str], max_hits: int = 6) -> List[Dict[str, Any]]:
         hits: List[Dict[str, Any]] = []
         seen = set()
-        pattern = r"(?:€|\$)?\s*\(?\d[\d\.,]*\)?"
+        pattern = r"(?:â‚¬|\$)?\s*\(?\d[\d\.,]*\)?"
         for row in rows:
             raw = self._row_primary_text(row)
             line_candidates = re.split(r"[\n\r]|(?<=[\.;])\s+", raw)
@@ -1734,7 +3325,7 @@ class LlamaService:
         s = f"{n:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
         if s.endswith(",00"):
             s = s[:-3]
-        return f"{sign}€{s}"
+        return f"{sign}â‚¬{s}"
 
     def _parse_year_from_question(self, question: Optional[str]) -> Optional[int]:
         if not question:
@@ -1752,7 +3343,7 @@ class LlamaService:
         candidates: List[Dict[str, Any]] = []
         seen = set()
         reject_labels = reject_labels or []
-        num_pattern = r"(?:€|\$)?\s*\(?\d[\d\.,]*\)?"
+        num_pattern = r"(?:â‚¬|\$)?\s*\(?\d[\d\.,]*\)?"
 
         for row in rows:
             raw = self._row_primary_text(row)
@@ -2015,7 +3606,7 @@ class LlamaService:
                 [
                     ("Kostenstructuur en efficiency", "Grip op kosten ondersteunt stabiele marges.", "Welke kostenposten zijn het sterkst gestegen en waarom?"),
                     ("Liquiditeit en verplichtingen", "Vooruitkijken op kasstromen voorkomt knelpunten.", "Welke verplichtingen drukken de komende maanden het meest op de liquiditeit?"),
-                    ("Contract- en afhankelijkheidsrisico", "Contractvoorwaarden en afhankelijkheden bepalen risico en onderhandelingsruimte.", "Waar zitten de grootste contractuele risico’s of afhankelijkheden?"),
+                    ("Contract- en afhankelijkheidsrisico", "Contractvoorwaarden en afhankelijkheden bepalen risico en onderhandelingsruimte.", "Waar zitten de grootste contractuele risicoâ€™s of afhankelijkheden?"),
                 ]
             )
         points = theme_candidates[:3]
@@ -2088,16 +3679,16 @@ class LlamaService:
 
         lines = [
             "Kort antwoord:",
-            "Dit zijn mogelijke verzekeringsrisico’s op basis van de beschikbare documenten.",
+            "Dit zijn mogelijke verzekeringsrisicoâ€™s op basis van de beschikbare documenten.",
             "",
-            "Mogelijke verzekeringsrisico’s:",
+            "Mogelijke verzekeringsrisicoâ€™s:",
         ]
         for idx, (name, evidence, check) in enumerate(dedup[:3], start=1):
             lines.append(f"{idx}. {name}")
             lines.append("   - Bewijs:")
             lines.append(f"   {evidence}")
             lines.append("   - Waarom dit belangrijk is:")
-            lines.append("   Onvoldoende of onduidelijke dekking kan leiden tot onverwachte financiële schade.")
+            lines.append("   Onvoldoende of onduidelijke dekking kan leiden tot onverwachte financiÃ«le schade.")
             lines.append("   - Wat te controleren:")
             lines.append(f"   {check}")
             lines.append("")
@@ -2112,7 +3703,7 @@ class LlamaService:
     def _build_client_file_summary_answer(self, search_results: List[Dict[str, Any]]) -> str:
         text_blob = " ".join(self._row_text(r) for r in search_results[:6])
         hints = self._scan_workflow_hints("advisory_points", search_results, limit=8)
-        business = "MKB-dossier met operationele en financiële bronstukken." if text_blob else "Onvoldoende context in opgehaalde bronnen."
+        business = "MKB-dossier met operationele en financiÃ«le bronstukken." if text_blob else "Onvoldoende context in opgehaalde bronnen."
         if "software" in text_blob or "it" in text_blob:
             business = "Bedrijfsactiviteiten lijken deels software/IT-gerelateerd."
         elif "voorraad" in text_blob or "inventory" in text_blob:
@@ -2126,7 +3717,7 @@ class LlamaService:
         if any(t in text_blob for t in ["cash", "bank", "liquiditeit"]):
             financial_points.append("- Liquiditeitssignalen zijn zichtbaar in bank/cash-gerelateerde informatie.")
         if not financial_points:
-            financial_points.append("- Beperkte financiële detailinformatie in de huidige retrievalset.")
+            financial_points.append("- Beperkte financiÃ«le detailinformatie in de huidige retrievalset.")
 
         tax_points = []
         if any(t in text_blob for t in ["btw", "vat", "omzetbelasting"]):
@@ -2142,7 +3733,7 @@ class LlamaService:
         if any(t in text_blob for t in ["verzekering", "polis", "insurance"]):
             risks.append("- Verzekeringsdekking moet worden vergeleken met activiteiten en activa.")
         if not risks:
-            risks.append("- Aanvullende bronstukken nodig om operationele risico’s beter te beoordelen.")
+            risks.append("- Aanvullende bronstukken nodig om operationele risicoâ€™s beter te beoordelen.")
 
         missing = [
             "- Volledige bronset voor facturen/bankafschriften per periode",
@@ -2152,7 +3743,7 @@ class LlamaService:
             missing.append("- In de opgehaalde context staat expliciet dat informatie ontbreekt; verifieer welke stukken nog ontbreken.")
 
         follow_up = [
-            "- Welke posten verschillen tussen interne notities en financiële overzichten?",
+            "- Welke posten verschillen tussen interne notities en financiÃ«le overzichten?",
             "- Zijn alle contracten en polisvoorwaarden actueel opgenomen in het dossier?",
         ]
 
@@ -2160,11 +3751,11 @@ class LlamaService:
             "Samenvatting klantdossier:\n\n"
             "Bedrijfsactiviteit:\n"
             f"{business}\n\n"
-            "Financiële punten:\n"
+            "FinanciÃ«le punten:\n"
             + "\n".join(financial_points)
             + "\n\nBelasting-/btw-punten:\n"
             + "\n".join(tax_points)
-            + "\n\nRisico’s of aandachtspunten:\n"
+            + "\n\nRisicoâ€™s of aandachtspunten:\n"
             + "\n".join(risks)
             + "\n\nOntbrekende informatie:\n"
             + "\n".join(missing)
@@ -2775,7 +4366,7 @@ class LlamaService:
     def _parse_numeric_token(self, token: str) -> Optional[float]:
         if not token:
             return None
-        t = token.strip().replace("$", "").replace("€", "").replace(" ", "")
+        t = token.strip().replace("$", "").replace("â‚¬", "").replace(" ", "")
         negative = False
         if t.startswith("(") and t.endswith(")"):
             negative = True

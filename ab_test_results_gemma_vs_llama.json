@@ -1,0 +1,196 @@
+{
+  "summary": {
+    "llama3.2:latest": {
+      "avg_latency_ms": 3015.9,
+      "refusal_rate": 0.0,
+      "source_signal_rate": 0.25,
+      "avg_answer_chars": 523,
+      "avg_docs_used": 3
+    },
+    "gemma3:4b": {
+      "avg_latency_ms": 13383.9,
+      "refusal_rate": 0.0,
+      "source_signal_rate": 1.0,
+      "avg_answer_chars": 1530.4,
+      "avg_docs_used": 6.75
+    }
+  },
+  "details": [
+    {
+      "model": "llama3.2:latest",
+      "question": "Vat dit document samen.",
+      "latency_ms": 2910.2,
+      "found_documents": true,
+      "num_documents_used": 12,
+      "refusal": false,
+      "has_sources": true,
+      "answer_chars": 1114,
+      "answer_preview": "1. Document summary - vanoersannen Vélligheids- en Gezondheidsplan -2ts=*\" | wheterRevisor: JohkPe - Deze veiligheid-, Gezondheids- en Milieuvoorschriften werden opgesteld in het kader van de landelijke wet- en - De bescherming van de veiligheid, de gezondheid"
+    },
+    {
+      "model": "llama3.2:latest",
+      "question": "Wat staat er in dit document over veiligheidsregels?",
+      "latency_ms": 3821.1,
+      "found_documents": false,
+      "num_documents_used": 0,
+      "refusal": false,
+      "has_sources": false,
+      "answer_chars": 340,
+      "answer_preview": "Error generating answer: Failed to reach Ollama via all endpoints: 0.0.0.0:11434/api/chat, http://host.docker.internal:11434/api/chat, http://gateway.docker.internal:11434/api/chat, http://localhost:11434/api/chat, http://127.0.0.1:11434/api/chat. Last error: "
+    },
+    {
+      "model": "llama3.2:latest",
+      "question": "Welke verplichtingen heeft de contractor volgens dit document?",
+      "latency_ms": 3459.7,
+      "found_documents": false,
+      "num_documents_used": 0,
+      "refusal": false,
+      "has_sources": false,
+      "answer_chars": 340,
+      "answer_preview": "Error generating answer: Failed to reach Ollama via all endpoints: 0.0.0.0:11434/api/chat, http://host.docker.internal:11434/api/chat, http://gateway.docker.internal:11434/api/chat, http://localhost:11434/api/chat, http://127.0.0.1:11434/api/chat. Last error: "
+    },
+    {
+      "model": "llama3.2:latest",
+      "question": "Welke persoonlijke beschermingsmiddelen worden genoemd?",
+      "latency_ms": 3466.6,
+      "found_documents": false,
+      "num_documents_used": 0,
+      "refusal": false,
+      "has_sources": false,
+      "answer_chars": 340,
+      "answer_preview": "Error generating answer: Failed to reach Ollama via all endpoints: 0.0.0.0:11434/api/chat, http://host.docker.internal:11434/api/chat, http://gateway.docker.internal:11434/api/chat, http://localhost:11434/api/chat, http://127.0.0.1:11434/api/chat. Last error: "
+    },
+    {
+      "model": "llama3.2:latest",
+      "question": "Welke risico's worden expliciet genoemd en welke maatregelen horen erbij?",
+      "latency_ms": 3506.6,
+      "found_documents": false,
+      "num_documents_used": 0,
+      "refusal": false,
+      "has_sources": false,
+      "answer_chars": 340,
+      "answer_preview": "Error generating answer: Failed to reach Ollama via all endpoints: 0.0.0.0:11434/api/chat, http://host.docker.internal:11434/api/chat, http://gateway.docker.internal:11434/api/chat, http://localhost:11434/api/chat, http://127.0.0.1:11434/api/chat. Last error: "
+    },
+    {
+      "model": "llama3.2:latest",
+      "question": "Maak een korte samenvatting van de belangrijkste compliance-eisen.",
+      "latency_ms": 91.0,
+      "found_documents": true,
+      "num_documents_used": 12,
+      "refusal": false,
+      "has_sources": true,
+      "answer_chars": 1030,
+      "answer_preview": "1. Document summary - (02/2020 yi Datum: 2 Ww Formulier ited iahattar - VANDERSANDEN Veiligheids- en Gezondheidsplan 2 teaRevisor: kPeJo - 3.4 De algemene maatregelen en voorschriften m.b.t. - 3.4.1 ToegangsvoorschriftenElektrische voorzieningen, water of derg"
+    },
+    {
+      "model": "llama3.2:latest",
+      "question": "Welke rollen of verantwoordelijken worden genoemd in het veiligheidsplan?",
+      "latency_ms": 3449.0,
+      "found_documents": false,
+      "num_documents_used": 0,
+      "refusal": false,
+      "has_sources": false,
+      "answer_chars": 340,
+      "answer_preview": "Error generating answer: Failed to reach Ollama via all endpoints: 0.0.0.0:11434/api/chat, http://host.docker.internal:11434/api/chat, http://gateway.docker.internal:11434/api/chat, http://localhost:11434/api/chat, http://127.0.0.1:11434/api/chat. Last error: "
+    },
+    {
+      "model": "llama3.2:latest",
+      "question": "Noem 5 concrete acties die op de werf verplicht zijn volgens het document.",
+      "latency_ms": 3422.8,
+      "found_documents": false,
+      "num_documents_used": 0,
+      "refusal": false,
+      "has_sources": false,
+      "answer_chars": 340,
+      "answer_preview": "Error generating answer: Failed to reach Ollama via all endpoints: 0.0.0.0:11434/api/chat, http://host.docker.internal:11434/api/chat, http://gateway.docker.internal:11434/api/chat, http://localhost:11434/api/chat, http://127.0.0.1:11434/api/chat. Last error: "
+    },
+    {
+      "model": "gemma3:4b",
+      "question": "Vat dit document samen.",
+      "latency_ms": 21.5,
+      "found_documents": true,
+      "num_documents_used": 12,
+      "refusal": false,
+      "has_sources": true,
+      "answer_chars": 1114,
+      "answer_preview": "1. Document summary - vanoersannen Vélligheids- en Gezondheidsplan -2ts=*\" | wheterRevisor: JohkPe - Deze veiligheid-, Gezondheids- en Milieuvoorschriften werden opgesteld in het kader van de landelijke wet- en - De bescherming van de veiligheid, de gezondheid"
+    },
+    {
+      "model": "gemma3:4b",
+      "question": "Wat staat er in dit document over veiligheidsregels?",
+      "latency_ms": 54708.0,
+      "found_documents": true,
+      "num_documents_used": 5,
+      "refusal": false,
+      "has_sources": true,
+      "answer_chars": 1850,
+      "answer_preview": "1. Direct answer: The documents outline several safety regulations for contractors working on the TOL Project Afschuiver. These include requirements for risk management systems, providing safety instructions, ensuring proper signage, adhering to legal requirem"
+    },
+    {
+      "model": "gemma3:4b",
+      "question": "Welke verplichtingen heeft de contractor volgens dit document?",
+      "latency_ms": 11947.1,
+      "found_documents": true,
+      "num_documents_used": 5,
+      "refusal": false,
+      "has_sources": true,
+      "answer_chars": 1822,
+      "answer_preview": "1.  The contractor has several obligations as outlined in the documents, primarily related to safety, health, and environmental protection. 2.  Evidence from documents:     *   Document 1 states: “Van elke contractor wordt geéist dat hij een doeltreffend syste"
+    },
+    {
+      "model": "gemma3:4b",
+      "question": "Welke persoonlijke beschermingsmiddelen worden genoemd?",
+      "latency_ms": 7689.1,
+      "found_documents": true,
+      "num_documents_used": 5,
+      "refusal": false,
+      "has_sources": true,
+      "answer_chars": 1163,
+      "answer_preview": "1. The documents mention several types of personal protective equipment (PPE) that contractors are required to use. 2. Evidence from documents:     *   “Elke contractor zal de chemische agentia/gevaarlijke stoffen opslaan volgens de geldende wetgeving en op ee"
+    },
+    {
+      "model": "gemma3:4b",
+      "question": "Welke risico's worden expliciet genoemd en welke maatregelen horen erbij?",
+      "latency_ms": 9202.5,
+      "found_documents": true,
+      "num_documents_used": 5,
+      "refusal": false,
+      "has_sources": true,
+      "answer_chars": 1674,
+      "answer_preview": "1.  The documents outline several risks associated with the project and the corresponding measures to mitigate them. These include risks related to worker safety, equipment operation, and site management. 2.  Evidence from documents:     *   **Risks:** The doc"
+    },
+    {
+      "model": "gemma3:4b",
+      "question": "Maak een korte samenvatting van de belangrijkste compliance-eisen.",
+      "latency_ms": 285.3,
+      "found_documents": true,
+      "num_documents_used": 12,
+      "refusal": false,
+      "has_sources": true,
+      "answer_chars": 1030,
+      "answer_preview": "1. Document summary - (02/2020 yi Datum: 2 Ww Formulier ited iahattar - VANDERSANDEN Veiligheids- en Gezondheidsplan 2 teaRevisor: kPeJo - 3.4 De algemene maatregelen en voorschriften m.b.t. - 3.4.1 ToegangsvoorschriftenElektrische voorzieningen, water of derg"
+    },
+    {
+      "model": "gemma3:4b",
+      "question": "Welke rollen of verantwoordelijken worden genoemd in het veiligheidsplan?",
+      "latency_ms": 8480.6,
+      "found_documents": true,
+      "num_documents_used": 5,
+      "refusal": false,
+      "has_sources": true,
+      "answer_chars": 1332,
+      "answer_preview": "1. Direct answer: The safety plan identifies several roles and responsible parties, including contractors, project managers/project verantwoordelijke, contact persons, and Vandersanden’s management.  2. Evidence from documents:     *   Document 2 states: “Elke"
+    },
+    {
+      "model": "gemma3:4b",
+      "question": "Noem 5 concrete acties die op de werf verplicht zijn volgens het document.",
+      "latency_ms": 14736.9,
+      "found_documents": true,
+      "num_documents_used": 5,
+      "refusal": false,
+      "has_sources": true,
+      "answer_chars": 2258,
+      "answer_preview": "1.  Five concrete actions that are required on the site according to the documents are: 1) Contractors must provide a dynamic risk management system [Document 1, page 17]. 2) Contractors must provide appropriate safety and health signage [Document 1, page 17]."
+    }
+  ]
+}

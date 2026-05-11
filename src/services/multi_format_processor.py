@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup
 import anthropic
 
 from src.models.document import ProcessingStatus, DocumentCategory
-from src.config import settings
+from src.config import settings, is_configured_secret
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -24,11 +24,12 @@ class MultiFormatProcessor:
 
     def __init__(self):
         """Initialize processor."""
-        try:
-            self.anthropic_client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-        except Exception as e:
-            logger.warning(f"Failed to initialize Anthropic client: {e}")
-            self.anthropic_client = None
+        self.anthropic_client = None
+        if is_configured_secret(settings.anthropic_api_key):
+            try:
+                self.anthropic_client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+            except Exception as e:
+                logger.warning(f"Failed to initialize Anthropic client: {e}")
 
     def detect_file_type(self, file_path: Path) -> str:
         """
@@ -777,7 +778,7 @@ class MultiFormatProcessor:
         Returns:
             str: AI-generated summary or simple excerpt
         """
-        if not settings.anthropic_api_key or settings.anthropic_api_key.startswith('dummy'):
+        if not is_configured_secret(settings.anthropic_api_key) or self.anthropic_client is None:
             excerpt = content[:500] + "..." if len(content) > 500 else content
             logger.debug(f"Using excerpt for {file_name} (no AI key)")
             return excerpt

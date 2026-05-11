@@ -15,7 +15,7 @@ import uuid
 from src.services.multi_format_processor import get_multi_format_processor
 from src.db.semantic_index import get_semantic_search_client
 from src.utils.logging import get_logger
-from src.config import settings
+from src.config import settings, is_configured_secret
 import anthropic
 
 logger = get_logger(__name__)
@@ -35,7 +35,9 @@ class SemanticDocumentIngestion:
         """Initialize ingestion service."""
         self.processor = get_multi_format_processor()
         self.search_client = get_semantic_search_client()
-        self.anthropic_client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+        self.anthropic_client = None
+        if is_configured_secret(settings.anthropic_api_key):
+            self.anthropic_client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
     def generate_summaries(
         self,
@@ -55,7 +57,7 @@ class SemanticDocumentIngestion:
                    summary_long: 1-2 paragraphs
         """
         # Check if AI is available
-        if not settings.anthropic_api_key or settings.anthropic_api_key.startswith('dummy'):
+        if not is_configured_secret(settings.anthropic_api_key) or self.anthropic_client is None:
             # Fallback: extract summaries from text
             logger.warning(f"No AI key available, using text excerpts for {title}")
 

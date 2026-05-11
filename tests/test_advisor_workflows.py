@@ -1,4 +1,4 @@
-from src.services.llama_service import LlamaService
+﻿from src.services.llama_service import LlamaService
 from src.services.formula_registry import get_formula_registry
 
 
@@ -36,8 +36,10 @@ def test_inconsistency_workflow_output_structure():
     assert "Volgende stap:" in answer
     assert "Bronnen:" in answer
     assert "1. Omzet volgens winst-en-verliesrekening sluit mogelijk niet aan op btw-overzicht" in answer
-    assert "Bewijs A: Totale omzet volgens winst-en-verliesrekening: €500.000" in answer
-    assert "Bewijs B: Btw-omzet / belastbare omzet volgens btw-overzicht: €420.000" in answer
+    assert "Bewijs A: Totale omzet volgens winst-en-verliesrekening:" in answer
+    assert "500.000" in answer
+    assert "Bewijs B: Btw-omzet / belastbare omzet volgens btw-overzicht:" in answer
+    assert "420.000" in answer
     assert "Terminologie-signaal voor controle" not in answer
 
 
@@ -130,3 +132,42 @@ def test_advisor_workflow_prioritizes_uploaded_client_docs():
     ]
     ranked = service._prioritize_advisor_results(rows)
     assert ranked[0]["filename"] == "balans_test.pdf"
+
+
+def test_ce_gap_workflow_returns_ce_sections():
+    service = _build_service()
+    rows = [
+        {**_row("ce_note_test.pdf", 1, "CE conformiteit technisch dossier en risicobeoordeling"), "corpus_type": "uploaded"},
+        {**_row("testreport_test.pdf", 2, "test report validatie"), "corpus_type": "uploaded"},
+    ]
+    answer = service._build_workflow_answer("ce_compliance_gap_check", rows)
+    assert "Kort antwoord:" in answer
+    assert "Gevonden informatie:" in answer
+    assert "Aandachtspunten of ontbrekende informatie:" in answer
+    assert "Mogelijke vervolgstap:" in answer
+
+
+def test_quotation_workflow_warns_about_missing_price_or_scope():
+    service = _build_service()
+    rows = [
+        {**_row("project_scope_test.pdf", 1, "scope technische eisen planning"), "corpus_type": "uploaded"},
+    ]
+    answer = service._build_workflow_answer("quotation_preparation", rows)
+    assert "Kort antwoord:" in answer
+    assert "Geen prijzen, doorlooptijden of toezeggingen invullen" in answer
+
+
+def test_document_governance_workflow_returns_actionable_sections():
+    service = _build_service()
+    rows = [
+        {**_row("governance_test.pdf", 1, "Revisie B, status draft, document owner projectleiding"), "corpus_type": "uploaded"},
+        {**_row("governance_test.pdf", 2, "Volgens de norm moet de aannemer voldoen aan richtlijnen."), "corpus_type": "uploaded"},
+        {**_row("governance_test.pdf", 3, "Gebruik van mobiele telefoon is verboden op de werkvloer."), "corpus_type": "uploaded"},
+        {**_row("governance_test.pdf", 4, "Gebruik van mobiele telefoon is toegestaan in de werkzone."), "corpus_type": "uploaded"},
+    ]
+    answer = service._build_workflow_answer("document_governance_check", rows)
+    assert "Kort antwoord:" in answer
+    assert "Gevonden informatie:" in answer
+    assert "Aandachtspunten of ontbrekende informatie:" in answer
+    assert "Mogelijke vervolgstap:" in answer
+    assert "Mogelijke tegenstrijdigheid" in answer

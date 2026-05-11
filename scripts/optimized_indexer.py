@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Optimized document indexer with Elasticsearch performance tuning.
 Based on Elasticsearch bulk indexing best practices.
@@ -145,7 +145,7 @@ def maybe_make_searchable_pdf(
         input_pdf=file_path,
         output_pdf=output_pdf,
         language=ocr_language,
-        force_ocr=True,
+        force_ocr=ocr_force,
         optimize_level=1,
     )
     return output_pdf
@@ -205,7 +205,7 @@ def prune_pdf_files_in_directory(
     Remove:
     - *.preview.pdf
     - original PDFs when *_searchable exists
-    - any remaining non-XAF/non-searchable PDFs
+    - unreadable PDFs only when a searchable replacement is available
     """
     stats = {
         "removed": 0,
@@ -264,18 +264,20 @@ def prune_pdf_files_in_directory(
             continue
 
         searchable = pdf.with_name(f"{pdf.stem}_searchable.pdf")
+        conversion_failed = False
         if not searchable.exists() and ocr_pdfs:
             try:
                 _ocr_pdf_to_searchable(
                     input_pdf=pdf,
                     output_pdf=searchable,
                     language=ocr_language,
-                    force_ocr=True if ocr_force else True,
+                    force_ocr=ocr_force,
                     optimize_level=1,
                 )
                 stats["created_searchable"] += 1
             except Exception:
                 stats["failed_to_convert"] += 1
+                conversion_failed = True
 
         if searchable.exists():
             try:
@@ -286,7 +288,18 @@ def prune_pdf_files_in_directory(
             stats["kept"] += 1
             continue
 
-        # If not searchable and not XAF-generated, remove to enforce keep policy.
+        # Never delete the user's original file when OCR conversion fails.
+        # Keep it so the indexer can still process readable PDFs.
+        if conversion_failed:
+            stats["kept"] += 1
+            continue
+
+        # Keep readable PDFs even without a generated searchable sibling.
+        if _pdf_has_readable_text(pdf):
+            stats["kept"] += 1
+            continue
+
+        # If still unreadable and not XAF-generated, remove to enforce keep policy.
         try:
             pdf.unlink(missing_ok=True)
             stats["removed"] += 1
@@ -344,7 +357,7 @@ class OptimizedElasticsearchIndexer:
                 index=self.index_name,
                 body={"index": {"refresh_interval": "-1"}}
             )
-            logger.info("✓ Disabled index refresh (will re-enable after indexing)")
+            logger.info("âœ“ Disabled index refresh (will re-enable after indexing)")
 
             # 2. Set replicas to 0 during indexing (faster writes)
             self.es.indices.put_settings(
@@ -363,7 +376,7 @@ class OptimizedElasticsearchIndexer:
                         }
                     }
                 )
-                logger.info("✓ Increased write thread pool size")
+                logger.info("âœ“ Increased write thread pool size")
             except Exception as e:
                 logger.warning(f"Could not modify cluster settings (may not have permission): {e}")
 
@@ -510,11 +523,12 @@ def process_document_parallel(
         elif file_path.suffix.lower() == ".pdf":
             source_filename_for_index = file_path.name
 
-        # Never index unreadable PDFs. They must be replaced by a readable OCR variant.
+        # Heuristic readability checks can miss valid PDFs. Let the main extractor
+        # attempt parsing/OCR first and fail only if no content is extracted.
         if working_file.suffix.lower() == ".pdf" and not _pdf_has_readable_text(working_file):
-            raise ValueError(
-                f"Unreadable PDF skipped from indexing: {file_path.name}. "
-                "No readable searchable replacement available."
+            print(
+                f"[{index}/{total}] [WARN] Low/undetected extractable text by heuristic for "
+                f"{working_file.name}; attempting full extraction anyway."
             )
 
         chunk_size = text_chunk_size if not no_chunks else 10_000_000
@@ -584,7 +598,7 @@ def main():
                        help='Prune PDFs so only searchable and XAF-generated PDFs remain')
     parser.add_argument('--no-prune-pdf-files', dest='prune_pdf_files', action='store_false',
                        help='Disable PDF pruning before indexing')
-    parser.set_defaults(prune_pdf_files=True)
+    parser.set_defaults(prune_pdf_files=False)
     parser.add_argument('--yes', '-y', action='store_true')
     args = parser.parse_args()
 
@@ -606,7 +620,7 @@ def main():
 
     source_dir = Path(args.source_dir)
     existing_dir = Path(args.existing_dir)
-    supported_extensions = [".pdf", ".xlsx", ".xls"]
+    supported_extensions = [".pdf", ".xlsx", ".xls", ".xaf"]
     if args.prune_pdf_files:
         print("Pruning PDFs in source folders (keep searchable + XAF-generated only)...")
         source_stats = prune_pdf_files_in_directory(
@@ -850,12 +864,14 @@ def main():
         print(f"[OK] Indexed: {success_count} documents")
         if error_count > 0:
             print(f"[ERR] Errors: {error_count}")
+            if result.get("errors"):
+                print(f"[ERR] First bulk error: {result['errors'][0]}")
         print()
 
         # Restore normal settings
         print("Restoring normal Elasticsearch settings...")
         indexer.restore_normal_settings()
-        print("✓ Index ready for searching")
+        print("[OK] Index ready for searching")
         print()
 
     except Exception as e:

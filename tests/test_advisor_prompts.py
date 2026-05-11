@@ -61,3 +61,30 @@ def test_create_prompt_uses_intent_format():
     )
     assert "Workflow rules:" in prompt
     assert "Ontbrekende of onduidelijke informatie:" in prompt
+
+
+def test_summary_question_uses_summary_format():
+    service = _build_service()
+    block = service._workflow_output_format("document_summary", question="Vat dit document samen.")
+    assert "Kort antwoord:" in block
+    assert "Belangrijkste onderdelen:" in block
+    assert "Belangrijke verplichtingen of aandachtspunten:" in block
+    assert "Mogelijke acties voor de gebruiker:" in block
+
+
+def test_ce_workflow_prompt_structure():
+    service = _build_service()
+    block = service._workflow_output_format("ce_compliance_gap_check", question="Wat ontbreekt voor CE-documentatie?")
+    assert "Kort antwoord:" in block
+    assert "Gevonden informatie:" in block
+    assert "Aandachtspunten of ontbrekende informatie:" in block
+    assert "Mogelijke vervolgstap:" in block
+
+
+def test_document_governance_prompt_structure():
+    service = _build_service()
+    block = service._workflow_output_format("document_governance_check")
+    assert "Kort antwoord:" in block
+    assert "Gevonden informatie:" in block
+    assert "Aandachtspunten of ontbrekende informatie:" in block
+    assert "Mogelijke vervolgstap:" in block

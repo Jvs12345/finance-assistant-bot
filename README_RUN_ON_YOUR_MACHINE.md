@@ -1,8 +1,8 @@
 ﻿# Run This Project On Your Own Machine
 
-This is a practical setup guide for running the Financial Document Assistant locally.
+Practical setup guide for running the Financial Document Assistant locally.
 
-## 1. What you need
+## 1. Requirements
 - Windows 10/11
 - Python 3.10+
 - Docker Desktop
@@ -23,6 +23,7 @@ copy .env.example .env
 Open `.env` and set at least:
 - `API_KEY` to any local value (example: `demo-key`)
 - keep `ELASTICSEARCH_URL=http://localhost:39200`
+- set `OLLAMA_MODEL=gemma3:4b`
 
 ## 4. Create Python environment and install packages
 ```powershell
@@ -47,9 +48,9 @@ In a separate terminal:
 ollama serve
 ```
 
-Then pull a model (first time only):
+Then pull model (first time only):
 ```powershell
-ollama pull llama3.2
+ollama pull gemma3:4b
 ```
 
 ## 7. Start the app (easy way)
@@ -64,7 +65,7 @@ This checks Ollama and opens the app in your browser.
 1. Put PDFs in `Source_files/`
 2. Run:
 ```powershell
-INDEX_SOURCE_FILES.bat
+INDEX_BOTH.bat
 ```
 
 After indexing, the documents are searchable in chat.
@@ -74,7 +75,7 @@ After indexing, the documents are searchable in chat.
 - API docs: `http://localhost:8100/docs`
 
 Try a question like:
-- `Which expenses in these files look deductible?`
+- `Welke technische eisen of verplichtingen worden genoemd?`
 
 ## 10. Optional: upload via API instead of batch indexing
 ```powershell
@@ -97,7 +98,7 @@ curl.exe http://localhost:11434/api/tags
 ```
 
 ### No results in chat
-- make sure you indexed files with `INDEX_SOURCE_FILES.bat`
+- make sure you indexed files with `INDEX_BOTH.bat`
 - check that PDFs contain selectable text (OCR issues can fail extraction)
 
 ### Docker memory too high
@@ -111,5 +112,6 @@ docker compose -p financial-bot down
 If needed, stop Ollama manually by closing its terminal or ending the process.
 
 ## Notes
-- This is a local proof-of-concept project.
-- It is for document analysis support, not final professional tax/legal advice.
+- This is a local working prototype.
+- Use results for preparation and analysis support.
+- Keep human review in place for tax, legal, compliance, and contractual decisions.

@@ -14,10 +14,10 @@ class Settings(BaseSettings):
     elasticsearch_url: str = Field(default="http://localhost:39200", alias="ELASTICSEARCH_URL")
     elasticsearch_index: str = Field(default="documents", alias="ELASTICSEARCH_INDEX")
 
-    embedding_provider: str = Field(default="openai", alias="EMBEDDING_PROVIDER")
-    embedding_model: str = Field(default="text-embedding-3-small", alias="EMBEDDING_MODEL")
+    embedding_provider: str = Field(default="local", alias="EMBEDDING_PROVIDER")
+    embedding_model: str = Field(default="all-MiniLM-L6-v2", alias="EMBEDDING_MODEL")
     embedding_api_key: str = Field(default="", alias="EMBEDDING_API_KEY")
-    embedding_dim: int = Field(default=1536, alias="EMBEDDING_DIM")
+    embedding_dim: int = Field(default=384, alias="EMBEDDING_DIM")
     search_mode: str = Field(default="semantic", alias="SEARCH_MODE")
     semantic_weight: float = Field(default=0.7, alias="SEMANTIC_WEIGHT")
     semantic_index_name: str = Field(default="documents_semantic", alias="SEMANTIC_INDEX_NAME")
@@ -33,10 +33,10 @@ class Settings(BaseSettings):
     max_context_chars: int = Field(default=7500, alias="MAX_CONTEXT_CHARS")
     max_chars_per_chunk: int = Field(default=1500, alias="MAX_CHARS_PER_CHUNK")
     enable_latency_logs: bool = Field(default=False, alias="ENABLE_LATENCY_LOGS")
-    ollama_model: str = Field(default="llama3.2", alias="OLLAMA_MODEL")
+    ollama_model: str = Field(default="gemma3:4b", alias="OLLAMA_MODEL")
     ollama_num_predict: int = Field(default=700, alias="OLLAMA_NUM_PREDICT")
     demo_mode: bool = Field(default=False, alias="DEMO_MODE")
-    demo_ollama_model: str = Field(default="phi3", alias="DEMO_OLLAMA_MODEL")
+    demo_ollama_model: str = Field(default="gemma3:4b", alias="DEMO_OLLAMA_MODEL")
     pdf_highlight_lazy: bool = Field(default=True, alias="PDF_HIGHLIGHT_LAZY")
 
     environment: str = Field(default="development", alias="ENVIRONMENT")
@@ -94,3 +94,17 @@ def get_settings() -> Settings:
 
 
 settings = get_settings()
+
+
+def is_configured_secret(value: Optional[str]) -> bool:
+    """Return True only for intentionally configured external service keys."""
+    token = (value or "").strip()
+    if not token:
+        return False
+    return token.lower() not in {
+        "not-configured",
+        "dummy",
+        "dummy-key",
+        "change-me",
+        "your-api-key",
+    }

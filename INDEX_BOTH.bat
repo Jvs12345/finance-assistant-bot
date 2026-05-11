@@ -31,6 +31,44 @@ if not exist ".venv\Scripts\python.exe" (
 rem Activate virtual environment
 call .venv\Scripts\activate.bat
 
+rem Ensure Elasticsearch is running (required for indexing)
+echo [INFO] Checking Elasticsearch on http://localhost:39200 ...
+curl.exe -s http://localhost:39200/_cluster/health >nul 2>&1
+if errorlevel 1 (
+    echo [WARN] Elasticsearch is not reachable. Starting Docker service...
+
+    docker info >nul 2>&1
+    if errorlevel 1 (
+        echo [ERROR] Docker is not running and Elasticsearch is not reachable.
+        echo         Start Docker Desktop or manually start Elasticsearch on port 39200.
+        echo.
+        pause
+        exit /b 1
+    )
+
+    docker compose -p financial-bot up -d elasticsearch >nul 2>&1
+
+    set ES_READY=0
+    for /L %%i in (1,1,60) do (
+        curl.exe -s http://localhost:39200/_cluster/health >nul 2>&1
+        if not errorlevel 1 (
+            set ES_READY=1
+            goto :es_ready
+        )
+        timeout /t 1 /nobreak >nul
+    )
+
+    :es_ready
+    if "!ES_READY!"=="0" (
+        echo [ERROR] Elasticsearch did not become ready on port 39200 in time.
+        echo.
+        pause
+        exit /b 1
+    )
+)
+echo [OK] Elasticsearch is available.
+echo.
+
 rem Ensure folders exist
 if not exist "Source_files" mkdir Source_files
 if not exist "Existing_files" mkdir Existing_files
@@ -68,7 +106,7 @@ echo        text chunk size: %TEXT_CHUNK_SIZE%
 echo        Elasticsearch URL: %ELASTICSEARCH_URL%
 echo        PYTHONPATH: %PYTHONPATH%
 echo.
-python scripts\optimized_indexer.py --pdf-dir Source_files --existing-dir Existing_files --chunk-size %BULK_CHUNK_SIZE% --text-chunk-size %TEXT_CHUNK_SIZE% --yes
+python scripts\optimized_indexer.py --pdf-dir Source_files --existing-dir Existing_files --chunk-size %BULK_CHUNK_SIZE% --text-chunk-size %TEXT_CHUNK_SIZE% --no-prune-pdf-files --yes
 
 if errorlevel 1 (
     echo.
